@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qq-file-mcp"
+version = "0.1.0"
+description = "Find and download QQ group files through a local, read-only MCP server."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["mcp>=1.20,<2", "httpx>=0.28,<1", "python-dotenv>=1,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1", "build>=1,<2"]
+
+[project.scripts]
+qq-file-mcp = "qq_file_mcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qq_file_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
