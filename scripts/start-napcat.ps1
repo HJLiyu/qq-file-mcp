@@ -6,6 +6,10 @@ $entry = Join-Path $runtime 'index.js'
 if (-not (Test-Path -LiteralPath $entry)) { throw 'Run scripts/setup.ps1 -WithNapCat first.' }
 $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 6099 -ErrorAction SilentlyContinue)
 if ($listeners.Count -eq 0) {
+    $desktopQQ = @(Get-CimInstance Win32_Process -Filter "Name='QQ.exe'")
+    if ($desktopQQ.Count -ne 0) {
+        throw 'Desktop QQ is running. Close it before starting standalone NapCat to avoid a login conflict. Use scripts/stop-napcat.ps1 before returning to desktop QQ.'
+    }
     $process = Start-Process -FilePath (Join-Path $runtime 'node.exe') -ArgumentList 'index.js' `
         -WorkingDirectory $runtime -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $runtime 'stdout.log') `

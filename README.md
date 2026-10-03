@@ -13,6 +13,8 @@ Codex → qq_download_file → 本机路径、文件大小、SHA-256
 
 这是单用户、自行部署的项目。QQ、NapCat、MCP 工具和 Codex 运行在同一台电脑；电脑关闭时服务离线。无需租服务器，也不调用额外的模型 API。Codex 自身的账号与使用额度照常适用。
 
+**当前 Windows 便捷安装使用独立登录的 NapCat Shell，同账号和桌面 QQ 同时运行可能发生登录冲突。当前按需切换使用：查文件时关闭桌面 QQ、启动 NapCat；查完后停止 NapCat，再登录桌面 QQ。** 手机 QQ 用于扫码登录。启动脚本检测到桌面 QQ 正在运行时会停止启动并提示关闭它。
+
 ## 能做什么
 
 - 用群名、群名关键词或群号定位已加入的群；同名群先供选择。
@@ -34,7 +36,7 @@ cd qq-file-mcp
 ./scripts/start-napcat.ps1 -OpenWebUI
 ```
 
-在本地 NapCat 页面完成 QQ 登录。安装脚本将：
+先关闭桌面 QQ，再在本地 NapCat 页面完成 QQ 登录。安装脚本将：
 
 1. 创建 `.venv`，安装本项目依赖。
 2. 从 NapCat 项目发布页下载固定版本 **v4.18.28**，核对 SHA-256 后解压到 `.local/`。
@@ -55,6 +57,15 @@ QQ 安装在其他位置时：
 ```
 
 重新加载 Codex 的 MCP 连接或开启新对话。让 Codex 调用 `qq_status`，再要求它搜索群文件。注册命令中只有配置文件路径，访问令牌保留在本机 `.env` 中。
+
+查完后返回日常电脑 QQ：
+
+```powershell
+./scripts/stop-napcat.ps1
+# 然后自行打开桌面 QQ 并登录。
+```
+
+停止脚本只终止本项目 `.local/napcat-node/node.exe` 对应的进程，保留 QQ 登录数据和已下载的文件。停止期间 MCP 的实时检索与下载不可用，下次需要时再次关闭桌面 QQ、运行 `start-napcat.ps1 -OpenWebUI` 并登录。
 
 > NapCat 是第三方接入，非腾讯官方开放 API，可能出现掉线、登录验证和账号风控。请阅读 [NapCat 安全说明](https://napneko.github.io/other/security)，再决定使用哪个账号。程序没有发消息、删文件或管理群的 MCP 工具，但 NapCat 本身有更广的能力，因此其接口必须保持本机绑定与令牌鉴权。
 
@@ -106,6 +117,7 @@ cp .env.example .env
 
 ## 范围与限制
 
+- 本版没有实现桌面 QQ 与 Agent 共享一个登录会话。若必须同时聊天和查文件，需要另外验证有界面客户端的接入方式；[NapCat Framework 文档](https://napneko.github.io/guide/boot/Framework) 已说明其维护限制，不能视为当前安装的即插即用替代品。
 - 聊天历史仅覆盖当前 QQ 会话实际能取回的内容，无法保证任意年份的消息都可用。
 - 合并转发中的文件、在线文件和多层嵌套目录尚未支持；普通聊天 `file` 附件已实现。
 - 群文件默认每个目录最多请求 10,000 项、最多查 100 个一级目录；聊天每轮最多 5,000 条。达到上限会在 coverage/warnings 中说明。
