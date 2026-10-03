@@ -58,7 +58,7 @@ def create_server(settings: Settings) -> FastMCP:
 
     @mcp.tool(annotations=READ)
     async def qq_status() -> dict[str, Any]:
-        """检查本机 NapCat 连接、QQ 登录状态和下载目录。"""
+        """检查本机 QQ 接口连接、登录状态、接入方式和下载目录。"""
         return await safe(service.status())
 
     @mcp.tool(annotations=READ)

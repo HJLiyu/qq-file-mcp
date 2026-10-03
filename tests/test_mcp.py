@@ -30,6 +30,9 @@ async def test_real_stdio_handshake_and_safe_backend_error(tmp_path):
         {
             "NAPCAT_URL": "http://127.0.0.1:1",
             "NAPCAT_TOKEN": "test-secret",
+            "ONEBOT_URL": "http://127.0.0.1:1",
+            "ONEBOT_TOKEN": "test-secret",
+            "QQ_FILE_BACKEND": "napcat",
             "QQ_FILE_STATE_DIR": str(tmp_path / "state"),
             "PYTHONIOENCODING": "utf-8",
         }

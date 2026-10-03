@@ -2,7 +2,7 @@
 
 **在 Codex 中按群名和文件名查找 QQ 群资料，并下载到电脑。**
 
-无需让 Agent 逐步识图、点击 QQ 窗口。工具通过本机 NapCat 实时查询资料，再通过 MCP 返回候选文件和搜索范围。
+无需让 Agent 逐步识图、点击 QQ 窗口。工具通过本机 OneBot 接口实时查询资料，再通过 MCP 返回候选文件和搜索范围。Windows 可使用 SnowLuma 加载到正在运行的桌面 QQ，在同一账号下聊天、查群文件和下载。
 
 ```text
 你：找「示例学习群」里文件名包含「课件」的文件。
@@ -11,9 +11,9 @@ Codex → qq_search_files → 群文件目录 + 可获取的聊天附件
 Codex → qq_download_file → 本机路径、文件大小、SHA-256
 ```
 
-这是单用户、自行部署的项目。QQ、NapCat、MCP 工具和 Codex 运行在同一台电脑；电脑关闭时服务离线。无需租服务器，也不调用额外的模型 API。Codex 自身的账号与使用额度照常适用。
+这是单用户、自行部署的项目。QQ、桥接工具、MCP 工具和 Codex 运行在同一台电脑；电脑关闭时服务离线。无需租服务器，也不调用额外的模型 API。Codex 自身的账号与使用额度照常适用。
 
-**当前 Windows 便捷安装使用独立登录的 NapCat Shell，同账号和桌面 QQ 同时运行可能发生登录冲突。当前按需切换使用：查文件时关闭桌面 QQ、启动 NapCat；查完后停止 NapCat，再登录桌面 QQ。** 手机 QQ 用于扫码登录。启动脚本检测到桌面 QQ 正在运行时会停止启动并提示关闭它。
+**需要同时聊天和查文件时，使用桌面会话接入方式。** 原有 NapCat Shell 安装仍可使用，但它独立登录 QQ，同账号与桌面 QQ 可能发生登录冲突；两种方式不要一起启动。
 
 ## 能做什么
 
@@ -25,7 +25,37 @@ Codex → qq_download_file → 本机路径、文件大小、SHA-256
 - 下载前重新确认文件，保留同名文件，返回 SHA-256；不会执行下载内容。
 - 只暴露状态、群查询、文件检索和下载工具。
 
-## 快速开始：Windows
+## 快速开始：Windows 桌面 QQ 共享会话
+
+需要 Python 3.11+、官方 QQNT、Codex。保留电脑 QQ 的正常登录。
+
+```powershell
+git clone https://github.com/HJLiyu/qq-file-mcp.git
+cd qq-file-mcp
+./scripts/setup.ps1
+Copy-Item .env.example .env
+```
+
+按 [桌面 QQ 接入说明](docs/desktop-qq.md) 手动准备官方 SnowLuma 发行包，启动控制台并加载已有 QQ 进程。核对 OneBot HTTP 服务绑定 `127.0.0.1`、令牌非空、消息格式 `array`，关闭桥接的自动状态回复命令。在 `.env` 中填写：
+
+```dotenv
+QQ_FILE_BACKEND=snowluma
+ONEBOT_URL=http://127.0.0.1:3000
+ONEBOT_TOKEN=你的本地OneBot访问令牌
+```
+
+检查连接并注册工具：
+
+```powershell
+./.venv/Scripts/python.exe -m qq_file_mcp --env-file .env doctor
+./scripts/register-codex.ps1
+```
+
+重新加载 Codex 的 MCP 连接或开启新对话，让 Codex 调用 `qq_status`、`qq_search_files`。电脑 QQ 继续聊天，工具复用这个登录会话。退出 QQ 或桥接工具后，实时检索暂不可用。
+
+**聊天历史限制：** SnowLuma v1.14.20 的原版接口需要已观察到该群的消息，才能从这个起点向前取历史；首次加载后安静的群可能返回空。打开群窗口不保证能补齐起点。本工具返回 `HISTORY_ANCHOR_UNAVAILABLE` 和实际覆盖范围；群文件目录不受此限制。本仓库没有提供修改版桥接程序，详见接入说明。
+
+## 原有方式：Windows NapCat Shell
 
 需要 Python 3.11+、已安装的官方 QQNT、Codex，以及可以访问目标群的 QQ 账号。
 
@@ -69,9 +99,9 @@ QQ 安装在其他位置时：
 
 > NapCat 是第三方接入，非腾讯官方开放 API，可能出现掉线、登录验证和账号风控。请阅读 [NapCat 安全说明](https://napneko.github.io/other/security)，再决定使用哪个账号。程序没有发消息、删文件或管理群的 MCP 工具，但 NapCat 本身有更广的能力，因此其接口必须保持本机绑定与令牌鉴权。
 
-## 已有 NapCat / 其他系统
+## 已有 OneBot 服务 / 其他系统
 
-本项目的 Python 工具可连接同一台机器上的 NapCat HTTP 服务。Windows 安装脚本是便捷入口；Linux/macOS 的 QQ 运行环境需自行准备。
+本项目支持同一台机器上的 NapCat 或 SnowLuma HTTP 服务。Windows 安装脚本只提供 Python 工具和可选 NapCat Shell 环境；其他系统的 QQ 运行环境需自行准备。
 
 ```bash
 python -m venv .venv
@@ -80,9 +110,11 @@ python -m pip install -e .
 cp .env.example .env
 ```
 
-在 NapCat 中启用 HTTP 服务：`127.0.0.1:3000`、设置非空 token、`messagePostFormat=array`。把相同 token 写入 `.env`。默认不允许连接远程 NapCat 地址。
+启用 HTTP 服务：`127.0.0.1:3000`、设置非空 token、消息格式 `array`（NapCat 名称为 `messagePostFormat`，SnowLuma 为 `messageFormat`）。把相同 token 写入 `.env` 的 `ONEBOT_TOKEN`，并设置 `QQ_FILE_BACKEND=napcat` 或 `snowluma`。连接地址只允许本机回环。
 
-优先使用 QQ HTTPS 文件链接下载。如果当前 NapCat 不支持链接接口，将尝试 QQ 本地缓存；此时需要通过 `QQ_FILE_ALLOWED_ROOTS` 指定允许读取的 QQ 缓存目录。不要将整个磁盘或个人主目录加入允许列表。
+旧配置中的 `NAPCAT_URL` / `NAPCAT_TOKEN` 仍有效；没有设置后端时默认 `napcat`。新的 `ONEBOT_*` 配置优先。文件和分页引用绑定接入方式，切换后会拒绝旧引用并要求重新搜索；推荐使用独立 `QQ_FILE_STATE_DIR`。
+
+优先使用 QQ HTTPS 文件链接下载。如果当前 NapCat 不支持链接接口，将尝试 QQ 本地缓存；此时需要通过 `QQ_FILE_ALLOWED_ROOTS` 指定允许读取的 QQ 缓存目录。不要将整个磁盘或个人主目录加入允许列表。SnowLuma 的 `get_file` 只适用于图片/语音缓存，群文件下载链接不可用时会报错，不会尝试该后备路径。
 
 ## 命令行
 
@@ -117,16 +149,16 @@ cp .env.example .env
 
 ## 范围与限制
 
-- 本版没有实现桌面 QQ 与 Agent 共享一个登录会话。若必须同时聊天和查文件，需要另外验证有界面客户端的接入方式；[NapCat Framework 文档](https://napneko.github.io/guide/boot/Framework) 已说明其维护限制，不能视为当前安装的即插即用替代品。
+- 同账号聊天与群文件工具已在 Windows QQNT + SnowLuma v1.14.20 中验证。上游版本、QQ 版本和登录状态改变后仍需重新验证；独立 NapCat Shell 不属于共享会话方式。
 - 聊天历史仅覆盖当前 QQ 会话实际能取回的内容，无法保证任意年份的消息都可用。
 - 合并转发中的文件、在线文件和多层嵌套目录尚未支持；普通聊天 `file` 附件已实现。
-- 群文件默认每个目录最多请求 10,000 项、最多查 100 个一级目录；聊天每轮最多 5,000 条。达到上限会在 coverage/warnings 中说明。
+- 群文件默认每个目录最多处理 10,000 项、最多查 100 个一级目录；聊天每轮最多 5,000 条。即使上游忽略请求数量，也在客户端限制目录处理。达到上限会在 coverage/warnings 中说明。
 - 两种来源独立限时，默认每种最多 40 秒；一个来源失败不会丢弃另一来源的结果。
 - 超时或到达范围上限后，以返回的范围为准。空结果不等于完整历史中不存在。
 - 文件结果及继续查询标识默认保留一小时。QQ 会话重启后，聊天消息标识可能失效，需要重新搜索。
 - 同一文件可能分别出现在群目录和聊天附件中，本版保留来源，不通过名称猜测它们是同一文件。
 - 默认单文件大小上限 512 MiB；过期文件、权限不足或内容大小变化会明确报错。
-- 原生 QQ 下载在某些运行环境中可能超时；本版优先使用受限 QQ HTTPS 下载，原生缓存作为后备路径。
+- 原生 QQ 下载在某些运行环境中可能超时；本版优先使用受限 QQ HTTPS 下载，NapCat 的原生缓存作为后备路径。
 
 ## 开发与验证
 
@@ -137,7 +169,7 @@ cp .env.example .env
 ./.venv/Scripts/python.exe -m build
 ```
 
-测试覆盖超过 50 个文件、目录检索、群名歧义、历史翻页重复边界、非连续消息 ID、账号切换、结果过期、同名文件、下载路径、链接重定向、令牌隔离，以及真实 stdio MCP 握手。
+测试覆盖两种后端的历史参数差异、同秒消息排序、超过 50 个文件、目录检索、群名歧义、历史翻页重复边界、非连续消息 ID、账号切换、结果过期、同名文件、下载路径、链接重定向、令牌隔离，以及真实 stdio MCP 握手。
 
 测试和示例不包含真实 QQ 消息。`.env`、`.local/`、会话配置、检索结果与下载文件均不应提交到 Git。
 
@@ -145,4 +177,4 @@ cp .env.example .env
 
 ## 上游与许可
 
-本项目代码使用 MIT 许可。NapCat 与 QQ 是独立运行依赖，遵循各自的许可和使用规则；仓库不包含其二进制文件。MCP 使用 [官方 Python SDK](https://github.com/modelcontextprotocol/python-sdk)。
+本项目独立编写的客户端代码使用 MIT 许可。QQ、NapCat、SnowLuma 是独立运行依赖，遵循各自的许可和使用规则；仓库不包含其源代码、修改版或二进制文件。SnowLuma 使用[源码可见非商业许可](https://github.com/SnowLuma/SnowLuma/blob/v1.14.20/LICENSE)，还需阅读其 [EULA](https://github.com/SnowLuma/SnowLuma/blob/v1.14.20/EULA.md)。MCP 使用 [官方 Python SDK](https://github.com/modelcontextprotocol/python-sdk)。

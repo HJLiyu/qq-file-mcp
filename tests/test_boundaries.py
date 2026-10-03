@@ -163,7 +163,7 @@ def test_settings_dont_repr_secrets(settings):
 
 def test_cli_chinese_json_survives_windows_pipe(tmp_path):
     env = dict(os.environ)
-    env.update({"PYTHONIOENCODING": "cp1252", "NAPCAT_TOKEN": ""})
+    env.update({"PYTHONIOENCODING": "cp1252", "NAPCAT_TOKEN": "", "ONEBOT_TOKEN": ""})
     result = subprocess.run(
         [sys.executable, "-m", "qq_file_mcp", "doctor"], env=env, capture_output=True, timeout=20
     )

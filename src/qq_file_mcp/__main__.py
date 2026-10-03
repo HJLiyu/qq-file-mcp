@@ -41,7 +41,7 @@ def main():
     parser.add_argument("--env-file", help="显式指定本地配置文件（不自动搜索 .env）")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("serve", help="启动 stdio MCP 服务")
-    sub.add_parser("doctor", help="检查 NapCat 和 QQ 登录状态")
+    sub.add_parser("doctor", help="检查本地 QQ 接口和登录状态")
     groups = sub.add_parser("groups", help="查找账号已加入的群")
     groups.add_argument("query", nargs="?", default="")
     search = sub.add_parser("search", help="实时搜索文件")

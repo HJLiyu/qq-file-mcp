@@ -13,4 +13,4 @@ if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
 if ($WithNapCat) {
     & (Join-Path $PSScriptRoot 'setup-napcat.ps1') -QQInstallDirectory $QQInstallDirectory
 }
-Write-Output 'Setup complete. Configure .env, start NapCat, then run doctor.'
+Write-Output 'Setup complete. Configure .env, load your local QQ bridge, then run doctor.'

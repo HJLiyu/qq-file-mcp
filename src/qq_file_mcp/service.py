@@ -35,8 +35,12 @@ def message_key(message: dict) -> str:
 
 
 def message_order(message: dict) -> tuple:
-    # message_id is a hash, NOT a chronological sequence. real_seq comes from QQ.
-    return (number(message.get("time")), number(message.get("real_seq")))
+    # message_id is a hash, NOT a chronological sequence. NapCat exposes real_seq;
+    # SnowLuma exposes the QQ sequence as message_seq instead.
+    return (
+        number(message.get("time")),
+        number(message.get("real_seq", message.get("message_seq"))),
+    )
 
 
 def attachments(message: dict):
@@ -68,13 +72,16 @@ class FileService:
             "account_id": str(info.get("user_id", "")),
             "download_dir": str(self.settings.download_dir),
             "transport": "local-stdio",
+            "backend": self.settings.backend,
         }
 
     async def _owner(self) -> str:
         info = await self.client.call("get_login_info")
         owner = str((info or {}).get("user_id", ""))
         if not owner or owner == "0":
-            raise QQFileError("NOT_LOGGED_IN", "请先在 NapCat 本地页面完成 QQ 登录。")
+            raise QQFileError(
+                "NOT_LOGGED_IN", "本地 QQ 接口未登录；请检查桌面 QQ 与桥接工具的加载状态。"
+            )
         return owner
 
     async def find_groups(self, query: str = "") -> dict:
@@ -129,12 +136,20 @@ class FileService:
     def _page(self, results: list, owner: str) -> tuple[list, str | None]:
         if len(results) <= 50:
             return results, None
-        token = self.store.put("results", {"owner": owner, "items": results[50:]})
+        token = self.store.put(
+            "results", {"owner": owner, "backend": self.settings.backend, "items": results[50:]}
+        )
         return results[:50], token
+
+    def _check_backend(self, saved: dict):
+        # References created before backend support belong to the original NapCat client.
+        if saved.get("backend", "napcat") != self.settings.backend:
+            raise QQFileError("BACKEND_CHANGED", "接入方式已切换，请重新搜索。")
 
     async def more_results(self, cursor: str) -> dict:
         async with self.lock:
             saved = self.store.get(cursor, "results")
+            self._check_backend(saved)
             if await self._owner() != saved["owner"]:
                 raise QQFileError("ACCOUNT_CHANGED", "账号已切换，请重新搜索。")
             items, next_cursor = self._page(saved["items"], saved["owner"])
@@ -167,6 +182,7 @@ class FileService:
             resume = None
             if history_cursor:
                 resume = self.store.get(history_cursor, "history")
+                self._check_backend(resume)
                 if (
                     resume["owner"] != owner
                     or resume["group_id"] != selected["group_id"]
@@ -174,7 +190,7 @@ class FileService:
                 ):
                     raise QQFileError("CURSOR_MISMATCH", "继续查询标识与账号、群或关键词不一致。")
                 source = "history"
-            base = {"owner": owner, **selected}
+            base = {"owner": owner, "backend": self.settings.backend, **selected}
             results: list[dict] = []
             warnings: list[dict] = []
             coverage: dict = {}
@@ -284,7 +300,8 @@ class FileService:
     def _directory_matches(self, base, keyword, data, folder_id, folder_name, results, info):
         if not isinstance(data, dict) or not isinstance(data.get("files"), list):
             raise QQFileError("PROTOCOL", "群文件目录返回格式不正确。")
-        for item in data["files"]:
+        # Some implementations ignore file_count; enforce our own processing limit.
+        for item in data["files"][: self.settings.directory_limit]:
             if not isinstance(item, dict):
                 continue
             info["files_scanned"] += 1
@@ -400,11 +417,23 @@ class FileService:
                 "newest_time": max(times) if times else None,
             }
         )
+        if self.settings.backend == "snowluma" and scanned == 0 and stop == "no_more_returned":
+            warnings.append(
+                {
+                    "source": "history",
+                    "code": "HISTORY_ANCHOR_UNAVAILABLE",
+                    "message": (
+                        "桥接会话可能尚未收到该群的消息起点，或历史不可用；"
+                        "空结果不能证明没有附件。群文件目录仍可查询。"
+                    ),
+                }
+            )
         if stop in {"message_limit", "time_limit"} and anchor:
             return self.store.put(
                 "history",
                 {
                     "owner": base["owner"],
+                    "backend": self.settings.backend,
                     "group_id": base["group_id"],
                     "keyword": normalize(keyword),
                     "anchor": anchor,
@@ -416,6 +445,7 @@ class FileService:
     async def download(self, result_id: str) -> dict:
         async with self.lock:
             saved = self.store.get(result_id, "file")
+            self._check_backend(saved)
             if await self._owner() != saved["owner"]:
                 raise QQFileError("ACCOUNT_CHANGED", "账号已切换，请重新搜索。")
             if saved["size"] > self.settings.max_download_bytes:
@@ -423,6 +453,7 @@ class FileService:
             selected, _ = await self._group(saved["group_id"])
             if selected is None:
                 raise QQFileError("GROUP_NOT_FOUND", "当前账号已无法确认这个群。")
+            busid = 102
             if saved["source"] == "group_files":
                 params = {
                     "group_id": saved["group_id"],
@@ -443,6 +474,7 @@ class FileService:
                         "FILE_CHANGED", "文件已变化、不可见或无法唯一确认，请重新搜索。"
                     )
                 file_id = str(current[0]["file_id"])
+                busid = number(current[0].get("busid")) or 102
             else:
                 message = await self.client.call("get_msg", message_id=saved["message_id"])
                 if (
@@ -460,11 +492,12 @@ class FileService:
                 if len(current) != 1:
                     raise QQFileError("FILE_CHANGED", "聊天附件已变化，请重新搜索。")
                 file_id = str(current[0]["file_id"])
+                busid = number(current[0].get("busid")) or 102
             # Resolve only freshly observed file IDs. Never try a filename fallback.
             # QQ's native completion callback can stall; prefer the refreshed HTTPS URL.
             try:
                 link = await self.client.call(
-                    "get_group_file_url", group_id=saved["group_id"], file_id=file_id
+                    "get_group_file_url", group_id=saved["group_id"], file_id=file_id, busid=busid
                 )
             except QQFileError as exc:
                 if exc.code != "UPSTREAM":

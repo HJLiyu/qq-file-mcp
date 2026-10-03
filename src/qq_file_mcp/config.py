@@ -15,6 +15,7 @@ from .errors import QQFileError
 class Settings:
     base_url: str = "http://127.0.0.1:3000"
     token: str = field(default="", repr=False)
+    backend: str = "napcat"
     state_dir: Path = field(default_factory=lambda: Path.home() / ".qq-file-mcp")
     download_dir: Path = field(default_factory=lambda: Path.home() / "Downloads" / "QQ-File-MCP")
     allowed_roots: tuple[Path, ...] = ()
@@ -27,6 +28,8 @@ class Settings:
     result_ttl: int = 3600
 
     def __post_init__(self):
+        if self.backend not in {"napcat", "snowluma"}:
+            raise QQFileError("CONFIG", "QQ_FILE_BACKEND 必须是 napcat 或 snowluma。")
         parsed = urlparse(self.base_url)
         try:
             local = ipaddress.ip_address(parsed.hostname or "").is_loopback
@@ -41,9 +44,13 @@ class Settings:
             or parsed.fragment
             or parsed.path not in {"", "/"}
         ):
-            raise QQFileError("CONFIG", "NAPCAT_URL 必须是本机回环地址，不能包含凭据或路径。")
+            raise QQFileError(
+                "CONFIG", "ONEBOT_URL（或 NAPCAT_URL）必须是本机回环地址，不能包含凭据或路径。"
+            )
         if not self.token.strip():
-            raise QQFileError("CONFIG", "请先设置 NAPCAT_TOKEN；不允许无鉴权连接。")
+            raise QQFileError(
+                "CONFIG", "请先设置 ONEBOT_TOKEN（或 NAPCAT_TOKEN）；不允许无鉴权连接。"
+            )
         for value in (
             self.request_timeout,
             self.search_timeout,
@@ -73,8 +80,11 @@ class Settings:
         allowed = tuple(Path(p).expanduser().resolve() for p in roots.split(os.pathsep) if p)
         try:
             return cls(
-                base_url=values.get("NAPCAT_URL", "http://127.0.0.1:3000").rstrip("/"),
-                token=values.get("NAPCAT_TOKEN", ""),
+                base_url=values.get(
+                    "ONEBOT_URL", values.get("NAPCAT_URL", "http://127.0.0.1:3000")
+                ).rstrip("/"),
+                token=values.get("ONEBOT_TOKEN", values.get("NAPCAT_TOKEN", "")),
+                backend=values.get("QQ_FILE_BACKEND", "napcat"),
                 state_dir=Path(values.get("QQ_FILE_STATE_DIR", str(user_home / ".qq-file-mcp")))
                 .expanduser()
                 .resolve(),

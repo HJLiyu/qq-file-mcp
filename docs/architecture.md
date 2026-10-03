@@ -4,8 +4,8 @@
 flowchart LR
     User[用户] --> Codex[Codex]
     Codex -->|stdio MCP| Tool[QQ File MCP]
-    Tool -->|回环 HTTP + token| NapCat[NapCat]
-    NapCat --> QQ[当前 QQ 账号可访问的数据]
+    Tool -->|回环 HTTP + token| Bridge[OneBot 本机接口]
+    Bridge --> QQ[当前 QQ 账号可访问的数据]
     Tool --> State[一小时结果引用]
     Tool -->|QQ HTTPS 或本机缓存| Downloads[专用下载目录]
 ```
@@ -18,7 +18,9 @@ flowchart LR
 
 每轮查询实时获取数据。结果库只记录本轮匹配的文件元数据和必要的分页边界，不提前建立聊天索引、不保存聊天正文、不保存下载 URL。
 
-NapCat 的短 `message_id` 并非连续数字；程序按消息时间和 `real_seq` 确定先后，将边界 ID 原样传回，不通过加减数字翻页。包含起点的重复页会被去重；连续返回相同范围时停止并报告 `repeated_page`。
+短 `message_id` 并非连续数字；程序按消息时间和 QQ 序号确定先后。NapCat 返回 `real_seq`，历史锚点参数为 `message_seq`；SnowLuma 返回的 `message_seq` 是 QQ 序号，历史锚点参数为数字 `message_id`。适配层只转换已观察到的边界 ID，不通过加减数字翻页。包含起点的重复页会被去重；连续返回相同范围时停止并报告 `repeated_page`。
+
+SnowLuma 可连接已有桌面 QQ 会话，NapCat Shell 则独立登录。两种接口需要显式配置后端；结果和继续搜索引用绑定账号及后端，切换时拒绝复用。推荐使用独立结果状态目录。SnowLuma 原版缺少未观察群的历史起点时，空页会伴随明确警告；具体运行边界见 [桌面接入说明](desktop-qq.md)。
 
 群文件目录接口没有完整覆盖证明，因此 `exhaustive` 不会被设置为 true。报告区分“已经查过返回目录”“达到数量上限”和“某个来源失败”。
 
@@ -26,7 +28,7 @@ NapCat 的短 `message_id` 并非连续数字；程序按消息时间和 `real_s
 
 NapCat 的文件 ID 可能只存在于当前进程的缓存中，因此公共工具不接收任意文件 ID 或 URL。搜索返回短期 `result_id`；下载时核对账号、群和来源，再重新读取目录或原始消息获得新 ID。无法唯一匹配时要求重新搜索。
 
-下载链接只在内存中短暂使用，只接受允许的 QQ HTTPS 域名，并逐跳检查重定向。独立 HTTP 客户端不携带 OneBot token。复制本地缓存时检查允许目录；输出文件名经过 Windows 路径字符及设备名清理，不覆盖现有文件。下载过程限制大小、校验预期长度、生成 SHA-256，失败时移除本次未完成的文件。
+下载链接只在内存中短暂使用，只接受允许的 QQ HTTPS 域名，并逐跳检查重定向。独立 HTTP 客户端不携带 OneBot token。根据新观察到的文件传递 `busid`，缺失时使用接口的默认值 102。NapCat 可后备复制本地缓存；SnowLuma 的 `get_file` 不支持群文档，链接不可用时直接报告错误。复制本地缓存时检查允许目录；输出文件名经过 Windows 路径字符及设备名清理，不覆盖现有文件。下载过程限制大小、校验预期长度、生成 SHA-256，失败时移除本次未完成的文件。
 
 SHA-256 用于记录下载结果和核对复制完整性，不代表腾讯提供了可信的原始校验值。
 
