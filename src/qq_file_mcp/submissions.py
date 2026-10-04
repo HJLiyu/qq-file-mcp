@@ -123,7 +123,7 @@ class SubmissionService:
                 "native_homework_submission": False,
                 "message": (
                     "此步骤未发送。请展示群名/群号与完整文字或文件信息；"
-                    "用户明确批准这份预览后才能提交。"
+                    "需要用户明确授权准确目标与内容；已有明确授权且未变时无需重复确认。"
                 ),
             }
 
