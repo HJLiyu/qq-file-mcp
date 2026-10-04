@@ -191,7 +191,7 @@ class MessageService:
                 "history_cursor": cursor,
                 "coverage": coverage,
                 "warnings": warnings,
-                "native_homework_supported": False,
+                "native_homework_included": False,
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                 "message": (
                     "仅返回实际可取回的消息；图片/语音/转发未解析，不能保证找到所有补充要求。"

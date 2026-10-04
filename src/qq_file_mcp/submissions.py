@@ -155,6 +155,10 @@ class SubmissionService:
             if saved["expires"] <= time.time():
                 raise QQFileError("EXPIRED_REFERENCE", "提交预览已过期，请重新准备并确认。")
             value = saved["value"]
+            if value.get("kind") not in {"text", "file"}:
+                raise QQFileError(
+                    "SUBMISSION_KIND", "该预览不是群聊天/群文件提交；请使用原生作业提交工具。"
+                )
             self.files._check_backend(value)
             if await self.files._owner() != value["owner"]:
                 raise QQFileError("ACCOUNT_CHANGED", "账号已改变，请重新准备并确认。")

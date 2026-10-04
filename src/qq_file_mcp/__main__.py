@@ -9,6 +9,7 @@ import sys
 from .client import OneBotClient
 from .config import Settings
 from .errors import QQFileError
+from .homework import HomeworkService
 from .messages import MessageService
 from .service import FileService
 from .submissions import SubmissionService
@@ -18,6 +19,22 @@ async def run_command(args, settings):
     client = OneBotClient(settings)
     try:
         service = FileService(client, settings)
+        if args.command == "homework":
+            return await HomeworkService(service).search(
+                args.group, args.keyword, args.publisher, args.cursor
+            )
+        if args.command == "homework-read":
+            return await HomeworkService(service).read(
+                args.homework_ref, args.section, args.char_offset, args.max_chars
+            )
+        if args.command == "homework-download":
+            return await HomeworkService(service).download(args.attachment_ref)
+        if args.command == "homework-prepare":
+            return await HomeworkService(service).prepare(
+                args.homework_ref, args.text, args.replace_existing
+            )
+        if args.command == "homework-submit":
+            return await HomeworkService(service).submit(args.preview_id)
         if args.command == "messages":
             return await MessageService(service).search(
                 args.group,
@@ -110,7 +127,9 @@ def main():
     downloads.add_argument("--offset", type=int, default=0)
     downloads.add_argument("--group", default="")
     downloads.add_argument("--publisher", default="")
-    downloads.add_argument("--source", choices=["", "group_files", "history"], default="")
+    downloads.add_argument(
+        "--source", choices=["", "group_files", "history", "native_homework"], default=""
+    )
     downloads.add_argument("--published-after")
     downloads.add_argument("--published-before")
     read = sub.add_parser("read", help="离线读取 PDF 页或文本行")
@@ -141,6 +160,24 @@ def main():
     submit.add_argument("preview_id")
     receipt = sub.add_parser("receipt", help="离线查看提交回执，不发送")
     receipt.add_argument("preview_id")
+    homework = sub.add_parser("homework", help="实时查询原生群作业和自己的状态")
+    homework.add_argument("group")
+    homework.add_argument("keyword", nargs="?", default="")
+    homework.add_argument("--publisher", default="")
+    homework.add_argument("--cursor")
+    hw_read = sub.add_parser("homework-read", help="读取原生作业、自己答案或评语")
+    hw_read.add_argument("homework_ref")
+    hw_read.add_argument("--section", default="requirements")
+    hw_read.add_argument("--char-offset", type=int, default=0)
+    hw_read.add_argument("--max-chars", type=int, default=12000)
+    hw_download = sub.add_parser("homework-download", help="下载返回的原生作业附件")
+    hw_download.add_argument("attachment_ref")
+    hw_prepare = sub.add_parser("homework-prepare", help="准备原生纯文字答案，不发送")
+    hw_prepare.add_argument("homework_ref")
+    hw_prepare.add_argument("--text", required=True)
+    hw_prepare.add_argument("--replace-existing", action="store_true")
+    hw_submit = sub.add_parser("homework-submit", help="一次提交已获准确授权的原生答案预览")
+    hw_submit.add_argument("preview_id")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     try:

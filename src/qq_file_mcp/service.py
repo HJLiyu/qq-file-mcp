@@ -79,7 +79,15 @@ class FileService:
             "backend": self.settings.backend,
             "submission_dir": str(self.settings.submission_dir),
             "submissions_enabled": self.settings.enable_submissions,
-            "native_homework_supported": False,
+            "native_homework_supported": self.settings.backend == "snowluma",
+            "native_homework": {
+                "session_verified": False,
+                "read": self.settings.backend == "snowluma",
+                "submission_formats": ["text"] if self.settings.backend == "snowluma" else [],
+                "file_submission": False,
+                "submissions_enabled": self.settings.enable_submissions,
+                "message": "能力声明不保证当前登录可用；实际原生查询才能验证会话。",
+            },
         }
 
     async def _owner(self) -> str:

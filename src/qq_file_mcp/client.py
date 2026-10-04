@@ -41,6 +41,12 @@ class OneBotClient:
     async def close(self):
         await self.http.aclose()
 
+    async def homework_credentials(self):
+        """Internal fixed-domain read; credentials are never exposed as an MCP tool."""
+        if self.backend != "snowluma":
+            raise QQFileError("HOMEWORK_BACKEND", "原生群作业目前只验证了 SnowLuma 桌面共享会话。")
+        return await self._request("get_credentials", {"domain": "qun.qq.com"})
+
     async def call(self, action: str, **params):
         writing = action in SUBMISSION_ACTIONS and self.enable_submissions
         if action not in ALLOWED_ACTIONS and not writing:
@@ -63,6 +69,9 @@ class OneBotClient:
                     params["message_id"] = int(params["message_id"])
                 except (TypeError, ValueError) as exc:
                     raise QQFileError("STALE_MESSAGE", "消息标识无效，请重新搜索。") from exc
+        return await self._request(action, params)
+
+    async def _request(self, action, params):
         try:
             kwargs = (
                 {"timeout": self.download_timeout}

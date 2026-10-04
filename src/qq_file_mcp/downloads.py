@@ -222,9 +222,11 @@ class DownloadedFiles:
         if (
             not isinstance(group, str)
             or len(group) > 200
-            or source not in {"", "group_files", "history"}
+            or source not in {"", "group_files", "history", "native_homework"}
         ):
-            raise QQFileError("INPUT", "群名最多200字符，来源为 group_files/history 或留空。")
+            raise QQFileError(
+                "INPUT", "群名最多200字符，来源为 group_files/history/native_homework 或留空。"
+            )
         filters = FileFilters.create(publisher, published_after, published_before)
         return await asyncio.to_thread(
             self._scan, query.strip(), limit, offset, normalize(group), filters, source

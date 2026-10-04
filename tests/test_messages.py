@@ -37,7 +37,7 @@ async def test_sender_only_query_preserves_evidence_without_persisting_text(chat
     ]
     assert all(m["sender"]["user_id"] == "1" and m["time"] for m in result["messages"])
     assert result["coverage"]["history"]["messages_scanned"] == 3
-    assert result["native_homework_supported"] is False
+    assert result["native_homework_included"] is False
     with sqlite3.connect(service.files.store.path) as db:
         saved = " ".join(r[0] for r in db.execute("SELECT value FROM items"))
     assert "误差分析" not in saved and "第2章第3题" not in saved

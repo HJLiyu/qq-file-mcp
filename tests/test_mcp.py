@@ -28,11 +28,24 @@ async def test_registered_tools_have_correct_side_effect_annotations(settings):
         "qq_prepare_submission",
         "qq_submit_submission",
         "qq_submission_receipt",
+        "qq_search_homework",
+        "qq_read_homework",
+        "qq_download_homework_attachment",
+        "qq_prepare_homework_submission",
+        "qq_submit_homework",
     }
     for tool in tools:
-        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.destructiveHint == (tool.name == "qq_submit_homework")
         assert tool.annotations.readOnlyHint == (
-            tool.name not in {"qq_download_file", "qq_prepare_submission", "qq_submit_submission"}
+            tool.name
+            not in {
+                "qq_download_file",
+                "qq_prepare_submission",
+                "qq_submit_submission",
+                "qq_download_homework_attachment",
+                "qq_prepare_homework_submission",
+                "qq_submit_homework",
+            }
         )
 
 
@@ -57,7 +70,7 @@ async def test_real_stdio_handshake_and_safe_backend_error(tmp_path):
         initialized = await session.initialize()
         assert initialized.serverInfo.name == "qq-file-mcp"
         tools = await session.list_tools()
-        assert len(tools.tools) == 12
+        assert len(tools.tools) == 17
         submit = await session.call_tool("qq_submit_submission", {"preview_id": "unapproved"})
         assert submit.structuredContent["error"]["code"] == "SUBMISSIONS_DISABLED"
         result = await session.call_tool("qq_status", {})
