@@ -13,6 +13,7 @@ from pathlib import Path
 from .config import Settings
 from .errors import QQFileError
 from .files import normalize
+from .metadata import FileFilters, provenance
 from .reader_worker import FileReadError, file_format, file_identity, inspect_path, is_link
 from .state import ResultStore
 
@@ -30,19 +31,28 @@ class DownloadedFiles:
         except FileReadError as exc:
             raise QQFileError(exc.code, exc.message) from exc
 
-    def register(self, path: Path, sha256: str | None = None) -> str:
+    def register(self, path: Path, sha256: str | None = None, origin: dict | None = None) -> str:
         info = self._inspect(path)
+        relative = path.absolute().relative_to(self.root).as_posix()
+        if origin is not None and sha256:
+            self.store.record_download(
+                str(self.root), relative, file_identity(info), sha256, provenance(origin)
+            )
         return self.store.put(
             "local_file",
             {
-                "relative_path": path.absolute().relative_to(self.root).as_posix(),
+                "relative_path": relative,
                 "identity": file_identity(info),
                 "sha256": sha256,
             },
         )
 
-    def _scan(self, query, limit, offset):
+    def _scan(self, query, limit, offset, group, filters, source):
         found, scanned, folders, skipped, complete = [], 0, 0, 0, True
+        records = self.store.downloaded_records(str(self.root))
+        unknown = 0
+        missing_publisher = 0
+        missing_time = 0
         if self.root.exists():
             if is_link(self.root.lstat()) or not self.root.is_dir():
                 raise QQFileError("LOCAL_PATH_DENIED", "下载目录必须是普通目录。")
@@ -81,16 +91,53 @@ class DownloadedFiles:
                         continue
                     if normalize(query) not in normalize(name):
                         continue
+                    relative = path.relative_to(self.root).as_posix()
+                    record = records.get(relative, {})
+                    known = record.get("identity") == file_identity(info)
+                    origins = record.get("provenance", []) if known else []
+                    if not origins:
+                        unknown += 1
+                    if not any(any(item.get("publisher", {}).values()) for item in origins):
+                        missing_publisher += 1
+                    if not any(item.get("time") for item in origins):
+                        missing_time += 1
+
+                    def origin_matches(item):
+                        group_match = not group or (
+                            group == item.get("group_id")
+                            if group.isdecimal()
+                            else group in normalize(item.get("group_name", ""))
+                        )
+                        return (
+                            group_match
+                            and (not source or source == item.get("source"))
+                            and filters.matches(item.get("publisher", {}), item.get("time"))
+                        )
+
+                    metadata_filter = bool(
+                        group
+                        or source
+                        or filters.publisher
+                        or filters.published_after is not None
+                        or filters.published_before is not None
+                    )
+                    matching_origins = [item for item in origins if origin_matches(item)]
+                    if metadata_filter and not matching_origins:
+                        continue
                     kind = file_format(path)
                     found.append(
                         {
                             "file_name": name,
-                            "relative_path": path.relative_to(self.root).as_posix(),
+                            "relative_path": relative,
+                            "provenance": origins,
+                            "matched_provenance": matching_origins,
+                            "provenance_status": "recorded" if origins else "unknown",
                             "bytes": info.st_size,
                             "modified_ns": info.st_mtime_ns,
                             "format": kind,
                             "can_read": kind != "unsupported",
                             "_identity": file_identity(info),
+                            "_sha256": record.get("sha256") if known else None,
                         }
                     )
                 if not complete and scanned >= self.settings.directory_limit:
@@ -103,7 +150,7 @@ class DownloadedFiles:
                 {
                     "relative_path": item["relative_path"],
                     "identity": item.pop("_identity"),
-                    "sha256": None,
+                    "sha256": item.pop("_sha256"),
                 },
             )
         return {
@@ -117,18 +164,50 @@ class DownloadedFiles:
                 "scanned_files": scanned,
                 "scanned_folders": folders,
                 "skipped_links_or_unreadable": skipped,
+                "files_without_provenance": unknown,
+                "files_without_publisher": missing_publisher,
+                "files_without_publication_time": missing_time,
             },
-            "warnings": []
-            if complete
-            else [
-                {
-                    "code": "LOCAL_SCAN_LIMIT",
-                    "message": "下载目录未完整扫描：达到数量上限或有目录无法访问。",
-                }
-            ],
+            "warnings": (
+                []
+                if not (
+                    (group or source)
+                    and unknown
+                    or filters.publisher
+                    and missing_publisher
+                    or (filters.published_after is not None or filters.published_before is not None)
+                    and missing_time
+                )
+                else [
+                    {
+                        "code": "PROVENANCE_MISSING",
+                        "message": "部分文件缺少筛选所需来源记录，未计入匹配；不代表文件不存在。",
+                    }
+                ]
+            )
+            + (
+                []
+                if complete
+                else [
+                    {
+                        "code": "LOCAL_SCAN_LIMIT",
+                        "message": "下载目录未完整扫描：达到数量上限或有目录无法访问。",
+                    }
+                ]
+            ),
         }
 
-    async def list_files(self, query: str = "", limit: int = 50, offset: int = 0) -> dict:
+    async def list_files(
+        self,
+        query: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        group: str = "",
+        publisher: str = "",
+        source: str = "",
+        published_after: str | None = None,
+        published_before: str | None = None,
+    ) -> dict:
         if (
             not isinstance(query, str)
             or len(query) > 200
@@ -140,7 +219,16 @@ class DownloadedFiles:
             raise QQFileError(
                 "INVALID_INPUT", "关键词最多200字符，每页1–100项，偏移不能超过扫描上限。"
             )
-        return await asyncio.to_thread(self._scan, query.strip(), limit, offset)
+        if (
+            not isinstance(group, str)
+            or len(group) > 200
+            or source not in {"", "group_files", "history"}
+        ):
+            raise QQFileError("INPUT", "群名最多200字符，来源为 group_files/history 或留空。")
+        filters = FileFilters.create(publisher, published_after, published_before)
+        return await asyncio.to_thread(
+            self._scan, query.strip(), limit, offset, normalize(group), filters, source
+        )
 
     async def read(
         self,

@@ -22,14 +22,30 @@ async def run_command(args, settings):
             return await service.find_groups(args.query)
         if args.command == "search":
             return await service.search(
-                args.group, args.filename, args.source, args.max_messages, args.history_cursor
+                args.group,
+                args.filename,
+                args.source,
+                args.max_messages,
+                args.history_cursor,
+                args.publisher,
+                args.published_after,
+                args.published_before,
             )
         if args.command == "more":
             return await service.more_results(args.cursor)
         if args.command == "download":
             return await service.download(args.result_id)
         if args.command == "downloads":
-            return await service.downloaded.list_files(args.query, args.limit, args.offset)
+            return await service.downloaded.list_files(
+                args.query,
+                args.limit,
+                args.offset,
+                args.group,
+                args.publisher,
+                args.source,
+                args.published_after,
+                args.published_before,
+            )
         if args.command == "read":
             return await service.downloaded.read(
                 args.file_id, args.start, args.count, args.char_offset, args.max_chars
@@ -52,10 +68,13 @@ def main():
     groups.add_argument("query", nargs="?", default="")
     search = sub.add_parser("search", help="实时搜索文件")
     search.add_argument("group")
-    search.add_argument("filename")
+    search.add_argument("filename", nargs="?", default="")
     search.add_argument("--source", choices=["both", "group_files", "history"], default="both")
     search.add_argument("--max-messages", type=int, default=1000)
     search.add_argument("--history-cursor")
+    search.add_argument("--publisher", default="")
+    search.add_argument("--published-after")
+    search.add_argument("--published-before")
     more = sub.add_parser("more", help="读取其余候选")
     more.add_argument("cursor")
     download = sub.add_parser("download", help="下载选定结果")
@@ -64,6 +83,11 @@ def main():
     downloads.add_argument("query", nargs="?", default="")
     downloads.add_argument("--limit", type=int, default=50)
     downloads.add_argument("--offset", type=int, default=0)
+    downloads.add_argument("--group", default="")
+    downloads.add_argument("--publisher", default="")
+    downloads.add_argument("--source", choices=["", "group_files", "history"], default="")
+    downloads.add_argument("--published-after")
+    downloads.add_argument("--published-before")
     read = sub.add_parser("read", help="离线读取 PDF 页或文本行")
     read.add_argument("file_id")
     read.add_argument("--start", type=int, default=1)

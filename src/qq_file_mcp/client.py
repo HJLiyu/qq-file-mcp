@@ -12,6 +12,7 @@ ALLOWED_ACTIONS = frozenset(
         "get_login_info",
         "get_version_info",
         "get_group_list",
+        "get_group_member_list",
         "get_group_root_files",
         "get_group_files_by_folder",
         "get_group_file_url",

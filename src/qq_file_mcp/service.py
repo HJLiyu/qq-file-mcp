@@ -9,6 +9,7 @@ from .config import Settings
 from .downloads import DownloadedFiles
 from .errors import QQFileError
 from .files import copy_download, download_url, normalize
+from .metadata import FileFilters, publisher_info, publisher_matches
 from .state import ResultStore
 
 
@@ -124,6 +125,7 @@ class FileService:
             raise QQFileError("TIMEOUT", "本轮搜索达到时间上限。") from exc
 
     def _candidate(self, context: dict) -> dict:
+        context = {key: value for key, value in context.items() if not key.startswith("_")}
         result_id = self.store.put("file", context)
         return {
             "result_id": result_id,
@@ -134,6 +136,7 @@ class FileService:
             "group_name": context["group_name"],
             "folder": context.get("folder_name"),
             "time": context.get("time"),
+            "publisher": context.get("publisher", {}),
         }
 
     def _page(self, results: list, owner: str) -> tuple[list, str | None]:
@@ -161,13 +164,31 @@ class FileService:
     async def search(
         self,
         group: str,
-        filename: str,
+        filename: str = "",
         source: str = "both",
         max_messages: int = 1000,
         history_cursor: str | None = None,
+        publisher: str = "",
+        published_after: str | None = None,
+        published_before: str | None = None,
     ) -> dict:
-        if not group.strip() or not filename.strip() or len(filename) > 200:
-            raise QQFileError("INPUT", "请提供群名或群号，以及 1–200 字符的文件名关键词。")
+        filters = FileFilters.create(publisher, published_after, published_before)
+        if (
+            not isinstance(group, str)
+            or not group.strip()
+            or len(group) > 200
+            or not isinstance(filename, str)
+            or len(filename) > 200
+            or (
+                not filename.strip()
+                and not filters.publisher
+                and filters.published_after is None
+                and filters.published_before is None
+            )
+        ):
+            raise QQFileError(
+                "INPUT", "请提供群名或群号，并提供文件名、发布人或发布时间；明确列出全部时用 *。"
+            )
         if source not in {"both", "group_files", "history"} or not 1 <= max_messages <= 5000:
             raise QQFileError("INPUT", "搜索来源或消息数量不合法（消息数量范围 1–5000）。")
         async with self.lock:
@@ -182,6 +203,20 @@ class FileService:
                     "message": "匹配到多个群，请选择群号后重新搜索。",
                 }
             assert selected is not None
+            warnings: list[dict] = []
+            profile, publisher_choices = await self._resolve_publisher(
+                selected["group_id"],
+                filters,
+                warnings,
+            )
+            if publisher_choices:
+                return {
+                    "ok": True,
+                    "needs_publisher_selection": True,
+                    "group": selected,
+                    "publishers": publisher_choices,
+                    "message": "发布人匹配到多个成员，请选择 QQ 号后重新查询。",
+                }
             resume = None
             if history_cursor:
                 resume = self.store.get(history_cursor, "history")
@@ -190,12 +225,20 @@ class FileService:
                     resume["owner"] != owner
                     or resume["group_id"] != selected["group_id"]
                     or resume["keyword"] != normalize(filename)
+                    or resume.get("filters", FileFilters().as_dict()) != filters.as_dict()
                 ):
-                    raise QQFileError("CURSOR_MISMATCH", "继续查询标识与账号、群或关键词不一致。")
+                    raise QQFileError(
+                        "CURSOR_MISMATCH", "继续查询标识与账号、群、文件名或发布人/时间条件不一致。"
+                    )
                 source = "history"
-            base = {"owner": owner, "backend": self.settings.backend, **selected}
+            base = {
+                "owner": owner,
+                "backend": self.settings.backend,
+                **selected,
+                "_filters": filters,
+                "_publisher_profile": profile,
+            }
             results: list[dict] = []
-            warnings: list[dict] = []
             coverage: dict = {}
             cursor = None
             # Each source has its own bounded budget so a large directory cannot starve history.
@@ -224,6 +267,7 @@ class FileService:
                 "ok": True,
                 "group": selected,
                 "keyword": filename,
+                "filters": filters.as_dict(),
                 "results": page,
                 "matched_in_this_scan": len(results),
                 "results_cursor": results_cursor,
@@ -234,9 +278,63 @@ class FileService:
                 "message": "结果仅覆盖本次实际搜索范围；未找到不代表文件不存在。",
             }
 
+    async def _resolve_publisher(self, group_id, filters, warnings):
+        query = filters.publisher
+        if not query or query.isdecimal():
+            return None, []
+        try:
+            members = await self._call(
+                time.monotonic() + self.settings.search_timeout,
+                "get_group_member_list",
+                group_id=group_id,
+                no_cache=True,
+            )
+            if not isinstance(members, list):
+                raise QQFileError("PROTOCOL", "群成员列表格式不正确。")
+            profiles = {
+                str(m["user_id"]): publisher_info({"sender": m})
+                for m in members
+                if isinstance(m, dict) and m.get("user_id")
+            }
+            choices = [p for p in profiles.values() if publisher_matches(query, p)]
+            exact = [
+                p for p in choices if query in {normalize(p["name"]), normalize(p["nickname"])}
+            ]
+            choices = exact or choices
+            if len(choices) > 1:
+                return None, choices
+            if choices:
+                filters.publisher = choices[0]["user_id"]
+                return choices[0], []
+            warnings.append(
+                {
+                    "code": "PUBLISHER_NOT_IN_MEMBER_LIST",
+                    "message": "成员列表未匹配发布人，仅匹配附件返回的名字；可能遗漏历史成员。",
+                }
+            )
+        except QQFileError as exc:
+            warnings.append(
+                {
+                    "code": "PUBLISHER_LOOKUP_UNAVAILABLE",
+                    "message": "无法获取成员名字，仅匹配文件/消息中实际返回的发布人信息。",
+                    "cause": exc.code,
+                }
+            )
+        return None, []
+
+    @staticmethod
+    def _publisher(base, value, *, directory=False):
+        publisher = publisher_info(value, directory=directory)
+        profile = base.get("_publisher_profile")
+        if profile and profile["user_id"] == publisher["user_id"]:
+            publisher = profile
+        return publisher
+
     async def _directories(self, base, keyword, results, warnings, coverage, deadline):
         info = {
             "files_scanned": 0,
+            "publisher_metadata_missing": 0,
+            "publication_time_missing": 0,
             "folders_scanned": 0,
             "folders_returned": 0,
             "per_directory_limit": self.settings.directory_limit,
@@ -309,7 +407,17 @@ class FileService:
                 continue
             info["files_scanned"] += 1
             name = str(item.get("file_name", ""))
-            if item.get("file_id") and matches(keyword, name):
+            publisher = self._publisher(base, item, directory=True)
+            stamp = number(item.get("upload_time"))
+            if not any(publisher.values()):
+                info["publisher_metadata_missing"] += 1
+            if not stamp:
+                info["publication_time_missing"] += 1
+            if (
+                item.get("file_id")
+                and matches(keyword, name)
+                and base["_filters"].matches(publisher, stamp)
+            ):
                 results.append(
                     self._candidate(
                         {
@@ -320,7 +428,8 @@ class FileService:
                             "folder_id": folder_id,
                             "folder_name": folder_name,
                             "fingerprint": list(fingerprint(item)),
-                            "time": number(item.get("upload_time")),
+                            "time": stamp,
+                            "publisher": publisher,
                         }
                     )
                 )
@@ -337,6 +446,8 @@ class FileService:
             "requested_limit": budget,
             "exhaustive": False,
             "unsupported_segments": 0,
+            "publisher_metadata_missing": 0,
+            "publication_time_missing": 0,
             "note": "仅包含当前会话可获取的消息。合并转发与在线文件不在本版范围内。",
         }
         coverage["history"] = info
@@ -379,6 +490,7 @@ class FileService:
                     recent_seen.append(key)
                     scanned += 1
                     stamp = number(message.get("time"))
+                    publisher = self._publisher(base, message)
                     if stamp:
                         times.append(stamp)
                     segments = message.get("message", [])
@@ -392,8 +504,12 @@ class FileService:
                         if isinstance(s, dict) and s.get("type") in {"onlinefile", "forward"}
                     )
                     for index, item in attachments(message):
+                        if not any(publisher.values()):
+                            info["publisher_metadata_missing"] += 1
+                        if not stamp:
+                            info["publication_time_missing"] += 1
                         name = str(item.get("file", item.get("name", "")))
-                        if matches(keyword, name):
+                        if matches(keyword, name) and base["_filters"].matches(publisher, stamp):
                             results.append(
                                 self._candidate(
                                     {
@@ -404,6 +520,7 @@ class FileService:
                                         "message_id": key,
                                         "segment_index": index,
                                         "time": stamp,
+                                        "publisher": publisher,
                                     }
                                 )
                             )
@@ -439,6 +556,7 @@ class FileService:
                     "backend": self.settings.backend,
                     "group_id": base["group_id"],
                     "keyword": normalize(keyword),
+                    "filters": base["_filters"].as_dict(),
                     "anchor": anchor,
                     "seen": recent_seen[-200:],
                 },
@@ -494,6 +612,14 @@ class FileService:
                 ]
                 if len(current) != 1:
                     raise QQFileError("FILE_CHANGED", "聊天附件已变化，请重新搜索。")
+                old_publisher = saved.get("publisher", {}).get("user_id")
+                if (
+                    old_publisher
+                    and publisher_info(message)["user_id"] != old_publisher
+                    or saved.get("time")
+                    and number(message.get("time")) != saved["time"]
+                ):
+                    raise QQFileError("FILE_CHANGED", "聊天附件的发送人或时间已变化，请重新搜索。")
                 file_id = str(current[0]["file_id"])
                 busid = number(current[0].get("busid")) or 102
             # Resolve only freshly observed file IDs. Never try a filename fallback.
@@ -514,16 +640,7 @@ class FileService:
                     )
                 except TimeoutError as exc:
                     raise QQFileError("DOWNLOAD_TIMEOUT", "QQ 下载超时，可稍后重试。") from exc
-                return {
-                    "ok": True,
-                    **result,
-                    "local_file_id": self.downloaded.register(
-                        Path(result["path"]), result["sha256"]
-                    ),
-                    "source": saved["source"],
-                    "group_id": saved["group_id"],
-                    "download_method": "qq_https",
-                }
+                return await self._download_result(saved, result, "qq_https")
             try:
                 data = await asyncio.wait_for(
                     self.client.call("get_file", file_id=file_id), self.settings.download_timeout
@@ -539,11 +656,50 @@ class FileService:
                 self.settings,
                 saved["size"],
             )
-            return {
-                "ok": True,
-                **result,
-                "local_file_id": self.downloaded.register(Path(result["path"]), result["sha256"]),
-                "source": saved["source"],
-                "group_id": saved["group_id"],
-                "download_method": "local_cache",
-            }
+            return await self._download_result(saved, result, "local_cache")
+
+    async def _download_result(self, saved, result, method):
+        publisher = saved.get("publisher", {})
+        warnings = []
+        if publisher.get("user_id") and not publisher.get("nickname"):
+            try:
+                members = await self._call(
+                    time.monotonic() + min(5, self.settings.request_timeout),
+                    "get_group_member_list",
+                    group_id=saved["group_id"],
+                    no_cache=True,
+                )
+                if not isinstance(members, list):
+                    raise QQFileError("PROTOCOL", "群成员列表格式不正确。")
+                profile = next(
+                    (
+                        publisher_info({"sender": m})
+                        for m in members
+                        if isinstance(m, dict) and str(m.get("user_id")) == publisher["user_id"]
+                    ),
+                    None,
+                )
+                if profile:
+                    publisher = profile
+            except QQFileError:
+                warnings.append(
+                    {
+                        "code": "PUBLISHER_ALIAS_UNAVAILABLE",
+                        "message": "文件已下载；无法补全当前昵称/群名片，保留已知信息。",
+                    }
+                )
+        origin = {**saved, "publisher": publisher}
+        return {
+            "ok": True,
+            **result,
+            "source": saved["source"],
+            "group_id": saved["group_id"],
+            "group_name": saved["group_name"],
+            "publisher": publisher,
+            "published_at": saved.get("time"),
+            "download_method": method,
+            "local_file_id": self.downloaded.register(
+                Path(result["path"]), result["sha256"], origin
+            ),
+            "warnings": warnings,
+        }

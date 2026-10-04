@@ -51,6 +51,7 @@ class FakeQQ:
         self.files = [file_item()]
         self.folders = []
         self.folder_files = {}
+        self.members = [{"user_id": 1, "nickname": "老师", "card": "张老师"}]
         self.history = [message(i, file=i % 10 == 0) for i in range(1, 131)]
         self.repeat = False
         self.fail_history = False
@@ -64,6 +65,8 @@ class FakeQQ:
             return {"user_id": self.owner}
         if action == "get_group_list":
             return deepcopy(self.groups)
+        if action == "get_group_member_list":
+            return deepcopy(self.members)
         if action == "get_group_root_files":
             return {
                 "files": deepcopy(self.files[: params["file_count"]]),
@@ -127,6 +130,137 @@ async def test_explicit_wildcard_lists_all_files(qq, settings):
     assert result["matched_in_this_scan"] == 2
 
 
+async def test_publisher_only_query_resolves_member_and_matches_uploader(qq, settings):
+    qq.files = [file_item("first.pdf", uploader=1), file_item("second.pdf", uploader=2)]
+    service = FileService(qq, settings)
+    found = await service.search("学习群", publisher="张老师", source="group_files")
+    assert [x["file_name"] for x in found["results"]] == ["first.pdf"]
+    assert found["results"][0]["publisher"] == {
+        "user_id": "1",
+        "name": "张老师",
+        "nickname": "老师",
+    }
+    assert found["filters"]["publisher"] == "1"
+
+
+async def test_duplicate_publisher_names_require_user_id_selection(qq, settings):
+    qq.members.append({"user_id": 2, "card": "张老师", "nickname": "Other"})
+    result = await FileService(qq, settings).search("10001", publisher="张老师")
+    assert result["needs_publisher_selection"] is True
+    assert len(result["publishers"]) == 2
+    assert not any(action == "get_group_root_files" for action, _ in qq.calls)
+
+
+async def test_numeric_publisher_is_exact_and_skips_member_lookup(qq, settings):
+    qq.files = [file_item("one.pdf", uploader=1), file_item("ten.pdf", uploader=10)]
+    result = await FileService(qq, settings).search("10001", publisher="1", source="group_files")
+    assert [x["file_name"] for x in result["results"]] == ["one.pdf"]
+    assert not any(action == "get_group_member_list" for action, _ in qq.calls)
+
+
+async def test_history_sender_and_date_filters_bind_continuation(qq, settings):
+    for m in qq.history:
+        m["sender"] = {
+            "user_id": 1 if int(m["real_seq"]) > 100 else 2,
+            "card": "张老师" if int(m["real_seq"]) > 100 else "其他",
+        }
+    service = FileService(qq, settings)
+    first = await service.search(
+        "10001",
+        publisher="1",
+        source="history",
+        max_messages=20,
+        published_after="2023-11-14T22:15:20+00:00",
+    )
+    assert len(first["results"]) == 2
+    assert first["results"][0]["publisher"]["user_id"] == "1"
+    with pytest.raises(QQFileError) as error:
+        await service.search(
+            "10001",
+            publisher="2",
+            history_cursor=first["history_cursor"],
+            published_after="2023-11-14T22:15:20+00:00",
+        )
+    assert error.value.code == "CURSOR_MISMATCH"
+    with pytest.raises(QQFileError) as error:
+        await service.search(
+            "10001",
+            publisher="1",
+            history_cursor=first["history_cursor"],
+            published_after="2023-11-14T22:15:21+00:00",
+        )
+    assert error.value.code == "CURSOR_MISMATCH"
+    continued = await service.search(
+        "10001",
+        publisher="1",
+        history_cursor=first["history_cursor"],
+        published_after="2023-11-14T22:15:20+00:00",
+    )
+    assert continued["matched_in_this_scan"] == 0
+
+
+async def test_historical_publisher_missing_from_members_matches_observed_name(qq, settings):
+    for m in qq.history:
+        m["sender"] = {"user_id": 3, "nickname": "以前的老师"}
+    found = await FileService(qq, settings).search(
+        "10001", publisher="以前的老师", source="history"
+    )
+    assert found["matched_in_this_scan"] == 13
+    assert found["warnings"][0]["code"] == "PUBLISHER_NOT_IN_MEMBER_LIST"
+
+
+async def test_missing_publisher_metadata_is_reported(qq, settings):
+    qq.files = [file_item(uploader=0)]
+    found = await FileService(qq, settings).search("10001", publisher="1", source="group_files")
+    assert found["matched_in_this_scan"] == 0
+    assert found["coverage"]["group_files"]["publisher_metadata_missing"] == 1
+
+
+async def test_changed_history_sender_rejects_download(qq, settings):
+    for m in qq.history:
+        m["sender"] = {"user_id": 1}
+    service = FileService(qq, settings)
+    found = await service.search("10001", "课件-130", "history", publisher="1")
+    qq.history[-1]["sender"]["user_id"] = 2
+    with pytest.raises(QQFileError) as error:
+        await service.download(found["results"][0]["result_id"])
+    assert error.value.code == "FILE_CHANGED"
+
+
+async def test_alias_lookup_failure_does_not_lose_successful_download(qq, settings):
+    call = qq.call
+
+    async def unavailable(action, **params):
+        if action == "get_group_member_list":
+            raise QQFileError("TIMEOUT", "Unavailable")
+        return await call(action, **params)
+
+    qq.call = unavailable
+    service = FileService(qq, settings)
+    found = await service.search("10001", "课件", "group_files")
+    downloaded = await service.download(found["results"][0]["result_id"])
+    assert downloaded["ok"] is True
+    assert downloaded["publisher"]["user_id"] == "1"
+    assert downloaded["warnings"][0]["code"] == "PUBLISHER_ALIAS_UNAVAILABLE"
+
+
+async def test_unavailable_member_lookup_falls_back_to_observed_name(qq, settings):
+    qq.files[0]["uploader_name"] = "张老师"
+    call = qq.call
+
+    async def unavailable(action, **params):
+        if action == "get_group_member_list":
+            raise QQFileError("UPSTREAM", "Unavailable")
+        return await call(action, **params)
+
+    qq.call = unavailable
+    result = await FileService(qq, settings).search(
+        "10001", publisher="张老师", source="group_files"
+    )
+    assert result["matched_in_this_scan"] == 1
+    assert result["warnings"][0]["code"] == "PUBLISHER_LOOKUP_UNAVAILABLE"
+
+
 async def test_download_returns_reference_that_can_be_read_without_qq(qq, settings):
     qq.files = [file_item("notes.txt")]
     service = FileService(qq, settings)
@@ -137,6 +271,13 @@ async def test_download_returns_reference_that_can_be_read_without_qq(qq, settin
     assert content["units"] == [{"index": 1, "text": "demo"}]
     assert content["sha256"] == downloaded["sha256"]
     assert len(qq.calls) == before
+    from qq_file_mcp.downloads import DownloadedFiles
+
+    fresh = DownloadedFiles(settings)
+    listing = await fresh.list_files(group="学习群", publisher="1")
+    assert listing["total_matches"] == 1
+    assert listing["files"][0]["provenance"][0]["source"] == "group_files"
+    assert (await fresh.list_files(group="学习群", publisher="老师"))["total_matches"] == 1
 
 
 async def test_history_continuation_no_gaps_or_duplicate_boundary(qq, settings):

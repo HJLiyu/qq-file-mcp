@@ -22,10 +22,12 @@ Codex → qq_read_downloaded_file → 分页正文 → 总结并标明页码
 - 用群名、群名关键词或群号定位已加入的群；同名群先供选择。
 - 实时查询根目录及接口返回的一级文件夹，不预同步。
 - 文件名支持完整名称、部分名称、大小写与全半角归一化；明确要求全部文件时可传 `*`。
+- 不知道文件名时，可按群名和发布人查找；支持 QQ 号、昵称/群名片及发布时间范围，同名成员先供选择。
 - 聊天附件默认扫描最近 **1,000 条可获取消息**，可分段继续向前查询。
 - 返回实际扫描条数、时间范围、截断或错误原因，避免将“未扫描到”当成“不存在”。
 - 下载前重新确认文件，保留同名文件，返回 SHA-256；不会执行下载内容。
 - 离线查找已下载的文件，直接读取 PDF、TXT、Markdown、CSV 等文本；无需重新下载。
+- 下载时保存群、上传者/发送者、发布时间和来源记录；之后可离线按这些信息筛选。
 - 按页或行返回文字及续读位置，长页截断后仍可接着读。
 - 只暴露查询、下载和读取工具；没有发消息、删除或群管理功能。
 
@@ -137,6 +139,12 @@ cp .env.example .env
 
 # 下载选定文件；使用搜索返回的 result_id
 ./.venv/Scripts/python.exe -m qq_file_mcp --env-file .env download '选定结果的标识'
+
+# 不知道文件名，只知道群名和发布人
+./.venv/Scripts/python.exe -m qq_file_mcp --env-file .env search '示例学习群' --publisher '张老师' --source group_files
+
+# 离线从已下载文件中按群和发布人找资料
+./.venv/Scripts/python.exe -m qq_file_mcp --env-file .env downloads --group '示例学习群' --publisher '张老师'
 ```
 
 默认下载目录：`~/Downloads/QQ-File-MCP`。可用 `.env` 中的 `QQ_FILE_DOWNLOAD_DIR` 修改。
@@ -149,16 +157,18 @@ cp .env.example .env
 
 读取结果带页号或行号、SHA-256 和 `next_read`。只读取指定范围，不会把整个长文档一次塞进上下文。扫描 PDF 暂无 OCR；公式和表格的提取可能不完整。详见 [离线读取说明](docs/downloads.md)。
 
+例如“找示例学习群里张老师9月份发的资料”：Agent 可以组合 `group`、`publisher`、`published_after`、`published_before` 和可选的文件名。新下载会持久保存实际观察到的群、发布人和发布时间；旧文件缺少这些记录时标为未知，有来源筛选时不会猜测匹配。群文件的发布人是上传者，聊天附件是发送者，不代表文档作者。
+
 ## MCP 工具
 
 | 工具 | 用途 |
 | --- | --- |
 | `qq_status` | 检查连接和登录 |
 | `qq_find_groups` | 按群名或群号定位群 |
-| `qq_search_files` | 文件名查询；`source=both/group_files/history` |
+| `qq_search_files` | 按群、可选文件名、发布人和时间查询；`source=both/group_files/history` |
 | `qq_more_results` | 读取同一轮搜索的其余候选，每页 50 条 |
 | `qq_download_file` | 下载选定 `result_id`，返回可直接读取的 `local_file_id` |
-| `qq_list_downloaded_files` | 离线查找下载目录中的文件，返回 `file_id` |
+| `qq_list_downloaded_files` | 离线按文件名、群、发布人、来源和时间查找，返回 `file_id` |
 | `qq_read_downloaded_file` | 用上述引用读取 PDF 页或文本行，支持续读 |
 
 ## 范围与限制
@@ -170,6 +180,7 @@ cp .env.example .env
 - 两种来源独立限时，默认每种最多 40 秒；一个来源失败不会丢弃另一来源的结果。
 - 超时或到达范围上限后，以返回的范围为准。空结果不等于完整历史中不存在。
 - 文件结果及继续查询标识默认保留一小时。QQ 会话重启后，聊天消息标识可能失效，需要重新搜索。
+- 已下载文件的来源记录持久保存在本机状态库；不受结果引用的一小时有效期影响。昵称/群名片是查询或下载时观察到的名字，离线时不自动跟随改名；QQ 号可精确定位。
 - 同一文件可能分别出现在群目录和聊天附件中，本版保留来源，不通过名称猜测它们是同一文件。
 - 默认单文件大小上限 512 MiB；过期文件、权限不足或内容大小变化会明确报错。
 - 离线读取默认单文件最多 50 MiB、单次解析 20 秒，最多10页或500行、20,000字符。暂不支持加密 PDF、Word/Excel、压缩包和图片 OCR。

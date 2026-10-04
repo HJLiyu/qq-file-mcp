@@ -74,20 +74,37 @@ def create_server(settings: Settings) -> FastMCP:
     @mcp.tool(annotations=READ)
     async def qq_search_files(
         group: str,
-        filename: str,
+        filename: str = "",
         source: str = "both",
         max_messages: int = 1000,
         history_cursor: str | None = None,
+        publisher: str = "",
+        published_after: str | None = None,
+        published_before: str | None = None,
     ) -> dict[str, Any]:
-        """实时搜索指定群文件名（完整或部分）。source=both/group_files/history。
+        """按群名、发布人、发布时间和可选文件名检索。source=both/group_files/history。
+
+        publisher 可用 QQ 号、昵称或群名片，同名成员需选择 QQ 号。群文件看上传者，聊天看发送者。
+        不知道文件名时可留空，但需提供发布人或时间。时间用 YYYY-MM-DD（本机时区）或带时区 ISO。
 
         仅当用户明确要求列出全部文件时，filename 可使用 *。
 
         聊天历史默认扫描最近1000条可获取消息。传回 history_cursor 可继续向前查；
-        必须保持 group 和 filename 不变。不能将未扫描、超时或权限错误解释为没有文件。
+        必须保持 group、filename、publisher 和时间条件不变。不能将未扫描或错误解释为没有文件。
         只返回文件元数据，不返回聊天正文。多个匹配供用户选择后再下载。
         """
-        return await safe(service.search(group, filename, source, max_messages, history_cursor))
+        return await safe(
+            service.search(
+                group,
+                filename,
+                source,
+                max_messages,
+                history_cursor,
+                publisher,
+                published_after,
+                published_before,
+            )
+        )
 
     @mcp.tool(annotations=READ)
     async def qq_more_results(results_cursor: str) -> dict[str, Any]:
@@ -104,13 +121,25 @@ def create_server(settings: Settings) -> FastMCP:
         query: str = "",
         limit: int = 50,
         offset: int = 0,
+        group: str = "",
+        publisher: str = "",
+        source: str = "",
+        published_after: str | None = None,
+        published_before: str | None = None,
     ) -> dict[str, Any]:
-        """离线列出专用下载目录及普通子目录内的文件，可按文件名关键词查找。
+        """离线按群名/群号、发布人、发布时间、来源和可选文件名查找已下载文件。
 
         不联系 QQ、不重新下载；query 留空列出全部。每页1–100项，按修改时间降序排列。
+        publisher 用 QQ 号或已记录的昵称/群名片；离线名字匹配可返回多个发布人，需按 QQ 号区分。
+        source 为 group_files/history 或留空；日期用 YYYY-MM-DD 或带时区 ISO 时间。
+        旧文件无来源元数据时标为 unknown，不会猜测群或发布人；有筛选条件时会被排除并计数。
         返回 file_id、格式和实际扫描范围。翻页传 next_offset；目录变化时请重新列出。
         """
-        return await safe(service.downloaded.list_files(query, limit, offset))
+        return await safe(
+            service.downloaded.list_files(
+                query, limit, offset, group, publisher, source, published_after, published_before
+            )
+        )
 
     @mcp.tool(annotations=LOCAL_READ)
     async def qq_read_downloaded_file(
