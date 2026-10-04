@@ -5,7 +5,8 @@ import httpx
 from .config import Settings
 from .errors import QQFileError
 
-# This is deliberately not a generic OneBot proxy. No write/group-admin APIs.
+# Deliberately not a generic proxy. Two opt-in submission actions; no group admin.
+SUBMISSION_ACTIONS = frozenset({"send_group_msg", "upload_group_file"})
 ALLOWED_ACTIONS = frozenset(
     {
         "get_status",
@@ -27,6 +28,7 @@ class OneBotClient:
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self.backend = settings.backend
         self.download_timeout = settings.download_timeout
+        self.enable_submissions = settings.enable_submissions
         self.http = httpx.AsyncClient(
             base_url=settings.base_url,
             headers={"Authorization": f"Bearer {settings.token}"},
@@ -40,7 +42,8 @@ class OneBotClient:
         await self.http.aclose()
 
     async def call(self, action: str, **params):
-        if action not in ALLOWED_ACTIONS:
+        writing = action in SUBMISSION_ACTIONS and self.enable_submissions
+        if action not in ALLOWED_ACTIONS and not writing:
             raise QQFileError("ACTION_DENIED", "该接口不在检索与下载允许列表中。")
         if self.backend == "snowluma":
             # SnowLuma's get_file handles image/voice caches, not group documents.
@@ -61,7 +64,11 @@ class OneBotClient:
                 except (TypeError, ValueError) as exc:
                     raise QQFileError("STALE_MESSAGE", "消息标识无效，请重新搜索。") from exc
         try:
-            kwargs = {"timeout": self.download_timeout} if action == "get_file" else {}
+            kwargs = (
+                {"timeout": self.download_timeout}
+                if action in {"get_file", "upload_group_file"}
+                else {}
+            )
             response = await self.http.post(f"/{action}", json=params, **kwargs)
             if response.status_code in {401, 403}:
                 raise QQFileError("AUTH", "本地 QQ 接口拒绝访问，请检查访问令牌。")

@@ -77,6 +77,9 @@ class FileService:
             "download_dir": str(self.settings.download_dir),
             "transport": "local-stdio",
             "backend": self.settings.backend,
+            "submission_dir": str(self.settings.submission_dir),
+            "submissions_enabled": self.settings.enable_submissions,
+            "native_homework_supported": False,
         }
 
     async def _owner(self) -> str:
@@ -434,13 +437,27 @@ class FileService:
                     )
                 )
 
-    async def _history(self, base, keyword, results, warnings, coverage, deadline, budget, resume):
+    async def _history(
+        self,
+        base,
+        keyword,
+        results,
+        warnings,
+        coverage,
+        deadline,
+        budget,
+        resume,
+        *,
+        projector=None,
+        max_chars=12000,
+    ):
         anchor = resume.get("anchor") if resume else None
         seen = set(resume.get("seen", [])) if resume else set()
         recent_seen = list(resume.get("seen", [])) if resume else []
         scanned = 0
         times: list[int] = []
         stop = "message_limit"
+        returned_chars = 0
         info = {
             "messages_scanned": 0,
             "requested_limit": budget,
@@ -451,6 +468,9 @@ class FileService:
             "note": "仅包含当前会话可获取的消息。合并转发与在线文件不在本版范围内。",
         }
         coverage["history"] = info
+        if projector:
+            info["unparsed_segments"] = {}
+            info["note"] = "仅覆盖可获取的消息；图片/语音/转发未提取正文，不能据此排除其他要求。"
         try:
             while scanned < budget:
                 params = {
@@ -483,6 +503,9 @@ class FileService:
                 # Process newest first; keep the oldest processed ID as an opaque continuation.
                 fresh.sort(key=message_order, reverse=True)
                 for message in fresh[: budget - scanned]:
+                    if projector and (len(results) >= 50 or returned_chars >= max_chars):
+                        stop = "result_limit"
+                        break
                     key = message_key(message)
                     if key in seen:
                         continue
@@ -503,7 +526,27 @@ class FileService:
                         for s in segments
                         if isinstance(s, dict) and s.get("type") in {"onlinefile", "forward"}
                     )
-                    for index, item in attachments(message):
+                    if projector:
+                        if not any(publisher.values()):
+                            info["publisher_metadata_missing"] += 1
+                        if not stamp:
+                            info["publication_time_missing"] += 1
+                        for segment in segments:
+                            if isinstance(segment, dict):
+                                kind = str(segment.get("type"))
+                                if kind not in {"text", "file", "at", "reply"}:
+                                    counts = info["unparsed_segments"]
+                                    counts[kind] = counts.get(kind, 0) + 1
+                        projected = projector(base, message, keyword)
+                        if projected:
+                            text = projected["text"]
+                            snippet = text[: min(2000, max_chars - returned_chars)]
+                            projected["text"] = snippet
+                            projected["text_truncated"] = len(snippet) < len(text)
+                            projected["total_text_chars"] = len(text)
+                            results.append(projected)
+                            returned_chars += len(snippet)
+                    for index, item in () if projector else attachments(message):
                         if not any(publisher.values()):
                             info["publisher_metadata_missing"] += 1
                         if not stamp:
@@ -526,6 +569,8 @@ class FileService:
                             )
                     anchor = key
                 info["messages_scanned"] = scanned
+                if stop == "result_limit":
+                    break
         except QQFileError as exc:
             stop = "time_limit" if exc.code == "TIMEOUT" else "upstream_error"
             warnings.append({"source": "history", "code": exc.code, "message": str(exc)})
@@ -548,9 +593,9 @@ class FileService:
                     ),
                 }
             )
-        if stop in {"message_limit", "time_limit"} and anchor:
+        if stop in {"message_limit", "time_limit", "result_limit", "upstream_error"} and anchor:
             return self.store.put(
-                "history",
+                "message_history" if projector else "history",
                 {
                     "owner": base["owner"],
                     "backend": self.settings.backend,

@@ -28,6 +28,11 @@ class Settings:
     max_read_bytes: int = 50 * 1024 * 1024
     read_timeout: float = 20
     result_ttl: int = 3600
+    submission_dir: Path = field(
+        default_factory=lambda: Path.home() / "Documents" / "QQ-File-MCP" / "Submissions"
+    )
+    enable_submissions: bool = False
+    max_submission_bytes: int = 50 * 1024 * 1024
 
     def __post_init__(self):
         if self.backend not in {"napcat", "snowluma"}:
@@ -63,6 +68,7 @@ class Settings:
             self.max_read_bytes,
             self.read_timeout,
             self.result_ttl,
+            self.max_submission_bytes,
         ):
             if value <= 0:
                 raise QQFileError("CONFIG", "超时、数量和大小上限必须大于零。")
@@ -83,6 +89,9 @@ class Settings:
         roots = values.get("QQ_FILE_ALLOWED_ROOTS", "")
         allowed = tuple(Path(p).expanduser().resolve() for p in roots.split(os.pathsep) if p)
         try:
+            enabled = values.get("QQ_FILE_ENABLE_SUBMISSIONS", "false").strip().lower()
+            if enabled not in {"true", "false"}:
+                raise ValueError
             return cls(
                 base_url=values.get(
                     "ONEBOT_URL", values.get("NAPCAT_URL", "http://127.0.0.1:3000")
@@ -106,6 +115,18 @@ class Settings:
                 max_download_bytes=int(values.get("QQ_FILE_MAX_DOWNLOAD_MB", "512")) * 1024 * 1024,
                 max_read_bytes=int(values.get("QQ_FILE_MAX_READ_MB", "50")) * 1024 * 1024,
                 read_timeout=float(values.get("QQ_FILE_READ_TIMEOUT", "20")),
+                submission_dir=Path(
+                    values.get(
+                        "QQ_FILE_SUBMISSION_DIR",
+                        str(user_home / "Documents" / "QQ-File-MCP" / "Submissions"),
+                    )
+                )
+                .expanduser()
+                .absolute(),
+                enable_submissions=enabled == "true",
+                max_submission_bytes=int(values.get("QQ_FILE_MAX_SUBMISSION_MB", "50"))
+                * 1024
+                * 1024,
             )
         except (TypeError, ValueError) as exc:
             raise QQFileError("CONFIG", "配置中的数字或路径格式不正确。") from exc

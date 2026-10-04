@@ -1,4 +1,4 @@
-"""Expiring query references and persistent download metadata; no bodies, URLs or secrets."""
+"""Private references, download provenance, and preview-bound submission state."""
 
 from __future__ import annotations
 
@@ -28,6 +28,14 @@ class ResultStore:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS downloads "
                 "(root TEXT, path TEXT, value TEXT, PRIMARY KEY(root, path))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS submissions "
+                "(id TEXT PRIMARY KEY, value TEXT, expires REAL, status TEXT, receipt TEXT)"
+            )
+            # Expired unsent text previews are discarded; receipts carry no answer text.
+            db.execute(
+                "DELETE FROM submissions WHERE expires < ? AND status='ready'", (time.time(),)
             )
         if os.name != "nt":
             self.path.chmod(0o600)
@@ -84,3 +92,48 @@ class ResultStore:
                     "SELECT path, value FROM downloads WHERE root=?", (root,)
                 )
             }
+
+    def create_submission(self, value: dict) -> tuple[str, float]:
+        preview_id, expires = secrets.token_urlsafe(18), time.time() + 900
+        with self._connect() as db:
+            db.execute(
+                "DELETE FROM submissions WHERE expires < ? AND status='ready'", (time.time(),)
+            )
+            db.execute(
+                "INSERT INTO submissions VALUES (?, ?, ?, 'ready', NULL)",
+                (preview_id, json.dumps(value, ensure_ascii=False), expires),
+            )
+        return preview_id, expires
+
+    def submission(self, preview_id: str) -> dict:
+        if not isinstance(preview_id, str) or len(preview_id) > 128:
+            raise QQFileError("INVALID_REFERENCE", "无效的提交预览标识。")
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT value, expires, status, receipt FROM submissions WHERE id=?", (preview_id,)
+            ).fetchone()
+        if not row:
+            raise QQFileError("EXPIRED_REFERENCE", "提交预览不存在或已过期，请重新准备。")
+        return {
+            "value": json.loads(row[0]),
+            "expires": row[1],
+            "status": row[2],
+            "receipt": json.loads(row[3]) if row[3] else None,
+        }
+
+    def claim_submission(self, preview_id: str, pending_receipt: dict) -> bool:
+        with self._connect() as db:
+            changed = db.execute(
+                "UPDATE submissions SET status='sending', value='{}', receipt=? "
+                "WHERE id=? AND status='ready' AND expires > ?",
+                (json.dumps(pending_receipt, ensure_ascii=False), preview_id, time.time()),
+            )
+            return changed.rowcount == 1
+
+    def finish_submission(self, preview_id: str, status: str, receipt: dict):
+        with self._connect() as db:
+            db.execute(
+                "UPDATE submissions SET status=?, receipt=?, value='{}' "
+                "WHERE id=? AND status='sending'",
+                (status, json.dumps(receipt, ensure_ascii=False), preview_id),
+            )

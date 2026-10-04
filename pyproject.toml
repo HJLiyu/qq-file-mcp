@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qq-file-mcp"
-version = "0.4.0"
-description = "Find, download and read QQ group files through a local MCP server."
+version = "0.5.0"
+description = "QQ group files, chat evidence and preview-bound submissions through local MCP."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
