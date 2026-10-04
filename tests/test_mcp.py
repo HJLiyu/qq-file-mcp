@@ -18,6 +18,8 @@ async def test_registered_tools_have_correct_side_effect_annotations(settings):
         "qq_search_files",
         "qq_more_results",
         "qq_download_file",
+        "qq_list_downloaded_files",
+        "qq_read_downloaded_file",
     }
     for tool in tools:
         assert tool.annotations.destructiveHint is False
@@ -34,6 +36,7 @@ async def test_real_stdio_handshake_and_safe_backend_error(tmp_path):
             "ONEBOT_TOKEN": "test-secret",
             "QQ_FILE_BACKEND": "napcat",
             "QQ_FILE_STATE_DIR": str(tmp_path / "state"),
+            "QQ_FILE_DOWNLOAD_DIR": str(tmp_path / "downloads"),
             "PYTHONIOENCODING": "utf-8",
         }
     )
@@ -44,8 +47,19 @@ async def test_real_stdio_handshake_and_safe_backend_error(tmp_path):
         initialized = await session.initialize()
         assert initialized.serverInfo.name == "qq-file-mcp"
         tools = await session.list_tools()
-        assert len(tools.tools) == 5
+        assert len(tools.tools) == 7
         result = await session.call_tool("qq_status", {})
         assert not result.isError
         assert result.structuredContent["ok"] is False
         assert result.structuredContent["error"]["code"] == "CONNECTION"
+        # The same MCP process can read existing downloads while QQ is unreachable.
+        folder = tmp_path / "downloads"
+        folder.mkdir()
+        (folder / "笔记.txt").write_text("计算物理\n数值方法", encoding="utf-8")
+        listing = await session.call_tool("qq_list_downloaded_files", {"query": "笔记"})
+        assert listing.structuredContent["ok"] is True
+        ref = listing.structuredContent["files"][0]["file_id"]
+        content = await session.call_tool("qq_read_downloaded_file", {"file_id": ref})
+        assert content.structuredContent["ok"] is True
+        assert content.structuredContent["units"][0] == {"index": 1, "text": "计算物理"}
+        assert content.structuredContent["next_read"] is None

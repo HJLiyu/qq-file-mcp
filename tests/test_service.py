@@ -127,6 +127,18 @@ async def test_explicit_wildcard_lists_all_files(qq, settings):
     assert result["matched_in_this_scan"] == 2
 
 
+async def test_download_returns_reference_that_can_be_read_without_qq(qq, settings):
+    qq.files = [file_item("notes.txt")]
+    service = FileService(qq, settings)
+    found = await service.search("10001", "notes", "group_files")
+    downloaded = await service.download(found["results"][0]["result_id"])
+    before = len(qq.calls)
+    content = await service.downloaded.read(downloaded["local_file_id"])
+    assert content["units"] == [{"index": 1, "text": "demo"}]
+    assert content["sha256"] == downloaded["sha256"]
+    assert len(qq.calls) == before
+
+
 async def test_history_continuation_no_gaps_or_duplicate_boundary(qq, settings):
     service = FileService(qq, settings)
     first = await service.search("学习群", "课件", "history", 100)

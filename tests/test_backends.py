@@ -155,7 +155,10 @@ async def test_snowluma_history_continuation_and_attachment_download(configured,
 
     async def fake_download(url, name, settings, size):
         assert name == "课件-130.pdf" and size == 4
-        return {"path": "verified.pdf", "bytes": 4, "sha256": "a" * 64}
+        settings.download_dir.mkdir()
+        path = settings.download_dir / name
+        path.write_bytes(b"demo")
+        return {"path": str(path), "file_name": name, "bytes": 4, "sha256": "a" * 64}
 
     monkeypatch.setattr("qq_file_mcp.service.download_url", fake_download)
     settings = configured(backend="snowluma")

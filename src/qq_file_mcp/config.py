@@ -25,6 +25,8 @@ class Settings:
     directory_limit: int = 10000
     folder_limit: int = 100
     max_download_bytes: int = 512 * 1024 * 1024
+    max_read_bytes: int = 50 * 1024 * 1024
+    read_timeout: float = 20
     result_ttl: int = 3600
 
     def __post_init__(self):
@@ -58,6 +60,8 @@ class Settings:
             self.directory_limit,
             self.folder_limit,
             self.max_download_bytes,
+            self.max_read_bytes,
+            self.read_timeout,
             self.result_ttl,
         ):
             if value <= 0:
@@ -100,6 +104,8 @@ class Settings:
                 directory_limit=int(values.get("QQ_FILE_DIRECTORY_LIMIT", "10000")),
                 folder_limit=int(values.get("QQ_FILE_FOLDER_LIMIT", "100")),
                 max_download_bytes=int(values.get("QQ_FILE_MAX_DOWNLOAD_MB", "512")) * 1024 * 1024,
+                max_read_bytes=int(values.get("QQ_FILE_MAX_READ_MB", "50")) * 1024 * 1024,
+                read_timeout=float(values.get("QQ_FILE_READ_TIMEOUT", "20")),
             )
         except (TypeError, ValueError) as exc:
             raise QQFileError("CONFIG", "配置中的数字或路径格式不正确。") from exc

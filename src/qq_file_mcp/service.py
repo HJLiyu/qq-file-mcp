@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .downloads import DownloadedFiles
 from .errors import QQFileError
 from .files import copy_download, download_url, normalize
 from .state import ResultStore
@@ -60,6 +62,7 @@ class FileService:
         self.client = client
         self.settings = settings
         self.store = store or ResultStore(settings.state_dir, settings.result_ttl)
+        self.downloaded = DownloadedFiles(settings, self.store)
         # Serialize operations because the upstream file-ID cache can change on refresh.
         self.lock = asyncio.Lock()
 
@@ -514,6 +517,9 @@ class FileService:
                 return {
                     "ok": True,
                     **result,
+                    "local_file_id": self.downloaded.register(
+                        Path(result["path"]), result["sha256"]
+                    ),
                     "source": saved["source"],
                     "group_id": saved["group_id"],
                     "download_method": "qq_https",
@@ -536,6 +542,7 @@ class FileService:
             return {
                 "ok": True,
                 **result,
+                "local_file_id": self.downloaded.register(Path(result["path"]), result["sha256"]),
                 "source": saved["source"],
                 "group_id": saved["group_id"],
                 "download_method": "local_cache",

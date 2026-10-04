@@ -28,6 +28,12 @@ async def run_command(args, settings):
             return await service.more_results(args.cursor)
         if args.command == "download":
             return await service.download(args.result_id)
+        if args.command == "downloads":
+            return await service.downloaded.list_files(args.query, args.limit, args.offset)
+        if args.command == "read":
+            return await service.downloaded.read(
+                args.file_id, args.start, args.count, args.char_offset, args.max_chars
+            )
     finally:
         await client.close()
 
@@ -54,6 +60,16 @@ def main():
     more.add_argument("cursor")
     download = sub.add_parser("download", help="下载选定结果")
     download.add_argument("result_id")
+    downloads = sub.add_parser("downloads", help="离线查找已下载文件")
+    downloads.add_argument("query", nargs="?", default="")
+    downloads.add_argument("--limit", type=int, default=50)
+    downloads.add_argument("--offset", type=int, default=0)
+    read = sub.add_parser("read", help="离线读取 PDF 页或文本行")
+    read.add_argument("file_id")
+    read.add_argument("--start", type=int, default=1)
+    read.add_argument("--count", type=int)
+    read.add_argument("--char-offset", type=int, default=0)
+    read.add_argument("--max-chars", type=int, default=12000)
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     try:
