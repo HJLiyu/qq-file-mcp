@@ -83,8 +83,11 @@ class FileService:
             "native_homework": {
                 "session_verified": False,
                 "read": self.settings.backend == "snowluma",
-                "submission_formats": ["text"] if self.settings.backend == "snowluma" else [],
-                "file_submission": False,
+                "submission_formats": ["text", "pdf", "doc", "docx"]
+                if self.settings.backend == "snowluma"
+                else [],
+                "file_submission": self.settings.backend == "snowluma",
+                "live_file_submission_verified": False,
                 "submissions_enabled": self.settings.enable_submissions,
                 "message": "能力声明不保证当前登录可用；实际原生查询才能验证会话。",
             },

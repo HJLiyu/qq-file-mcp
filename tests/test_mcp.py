@@ -35,6 +35,9 @@ async def test_registered_tools_have_correct_side_effect_annotations(settings):
         "qq_submit_homework",
     }
     for tool in tools:
+        if tool.name == "qq_prepare_homework_submission":
+            assert "file_path" in tool.inputSchema["properties"]
+            assert tool.inputSchema["required"] == ["homework_ref"]
         assert tool.annotations.destructiveHint == (tool.name == "qq_submit_homework")
         assert tool.annotations.readOnlyHint == (
             tool.name

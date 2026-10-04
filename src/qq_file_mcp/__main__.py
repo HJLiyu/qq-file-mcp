@@ -31,7 +31,7 @@ async def run_command(args, settings):
             return await HomeworkService(service).download(args.attachment_ref)
         if args.command == "homework-prepare":
             return await HomeworkService(service).prepare(
-                args.homework_ref, args.text, args.replace_existing
+                args.homework_ref, args.text, args.replace_existing, args.file
             )
         if args.command == "homework-submit":
             return await HomeworkService(service).submit(args.preview_id)
@@ -172,9 +172,10 @@ def main():
     hw_read.add_argument("--max-chars", type=int, default=12000)
     hw_download = sub.add_parser("homework-download", help="下载返回的原生作业附件")
     hw_download.add_argument("attachment_ref")
-    hw_prepare = sub.add_parser("homework-prepare", help="准备原生纯文字答案，不发送")
+    hw_prepare = sub.add_parser("homework-prepare", help="准备原生文字或PDF/Word答案，不发送")
     hw_prepare.add_argument("homework_ref")
-    hw_prepare.add_argument("--text", required=True)
+    hw_prepare.add_argument("--text", default="")
+    hw_prepare.add_argument("--file", default="")
     hw_prepare.add_argument("--replace-existing", action="store_true")
     hw_submit = sub.add_parser("homework-submit", help="一次提交已获准确授权的原生答案预览")
     hw_submit.add_argument("preview_id")

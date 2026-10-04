@@ -12,6 +12,8 @@ import httpx
 from .config import Settings
 from .errors import QQFileError
 
+HOMEWORK_FILE_HOST = "grouphw-1251316161.file.myqcloud.com"
+
 
 def normalize(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold().strip()
@@ -97,7 +99,7 @@ def copy_download(source: str, name: str, settings: Settings, expected_size: int
 def validate_download_url(url: str) -> None:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().rstrip(".")
-    trusted = any(
+    trusted = host == HOMEWORK_FILE_HOST or any(
         host == domain or host.endswith("." + domain)
         for domain in ("qq.com", "qq.com.cn", "qpic.cn", "weiyun.com")
     )

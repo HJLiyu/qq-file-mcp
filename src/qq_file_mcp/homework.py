@@ -1,4 +1,4 @@
-"""Native homework reads and preview-bound own text submissions; no generic QQ web API."""
+"""Native homework reads and preview-bound own submissions; no generic QQ web API."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .errors import QQFileError
 from .files import download_url, normalize, safe_filename, validate_download_url
-from .homework_client import NativeHomeworkClient, native_id
+from .homework_client import DOCUMENT_TYPES, NativeHomeworkClient, document_url, native_id
 from .metadata import FileFilters
 from .submissions import SubmissionService
 
@@ -392,23 +392,39 @@ class HomeworkService:
             }
         )
 
-    async def prepare(self, homework_ref, text, replace_existing=False):
+    async def prepare(self, homework_ref, text="", replace_existing=False, file_path=""):
         if (
             not isinstance(text, str)
-            or not text.strip()
+            or not isinstance(file_path, str)
+            or len(file_path) > 4096
+            or not (text.strip() or file_path.strip())
             or len(text) > 5000
             or type(replace_existing) is not bool
         ):
-            raise QQFileError("INPUT", "原生提交仅支持非空纯文字，最多5000字符。")
+            raise QQFileError("INPUT", "提供文字或一个 PDF/Word 文件，可附文字；文字最多5000字符。")
         async with self.files.lock:
             saved = self.files.store.get(homework_ref, "homework")
             row = await self._fresh(saved)
             replacing = self._writable(row, saved["owner"], replace_existing)
+            metadata = None
+            if file_path.strip():
+                helper = SubmissionService(self.files)
+                path = Path(file_path)
+                if not path.is_absolute():
+                    path = helper.root / path
+                if path.suffix.lower() not in DOCUMENT_TYPES:
+                    raise QQFileError("HOMEWORK_FILE_TYPE", "原生文件提交目前支持 PDF、DOC、DOCX。")
+                metadata, _ = await asyncio.to_thread(helper._file, path)
+                if Path(metadata["name"]).suffix.lower() not in DOCUMENT_TYPES:
+                    raise QQFileError(
+                        "HOMEWORK_FILE_TYPE", "文件名过长或无有效后缀，请缩短后重新预览。"
+                    )
             # QQ's verified editor trims text; display and store the exact actual payload.
             value = {
                 **saved,
-                "kind": "native_homework_text",
+                "kind": "native_homework_file" if metadata else "native_homework_text",
                 "text": text.strip(),
+                "file": metadata,
                 "feedback_hash": self._feedback_hash(row, saved["owner"]),
                 "replace_existing": replacing,
             }
@@ -428,10 +444,15 @@ class HomeworkService:
                 "own_status": state_summary(row, saved["owner"]),
                 "replace_existing": replacing,
                 "text": value["text"],
+                "file": {k: metadata[k] for k in ("path", "name", "size", "sha256")}
+                if metadata
+                else None,
+                "file_upload_experimental": bool(metadata),
                 "submissions_enabled": self.settings.enable_submissions,
                 "message": (
                     "此步骤未发送。展示准确作业和完整答案；"
                     "替换会覆盖原答案（含附件）。需要用户明确授权。"
+                    + ("原生文件提交为试验功能，尚未真实写入验收。" if metadata else "")
                 ),
             }
 
@@ -448,7 +469,7 @@ class HomeworkService:
             if saved["expires"] <= time.time():
                 raise QQFileError("EXPIRED_REFERENCE", "原生提交预览已过期，请重新准备。")
             value = saved["value"]
-            if value.get("kind") != "native_homework_text":
+            if value.get("kind") not in {"native_homework_text", "native_homework_file"}:
                 raise QQFileError("SUBMISSION_KIND", "该预览不是原生群作业答案。")
             row = await self._fresh(value)
             self._writable(row, value["owner"], value["replace_existing"])
@@ -472,41 +493,108 @@ class HomeworkService:
                 "completed_at": None,
                 "message": "原生提交尝试中或进程中断，请核对QQ，不要重试。",
             }
-            if not self.files.store.claim_submission(preview_id, receipt):
-                return SubmissionService(self.files).receipt(preview_id)
+            staged = None
+            metadata = value.get("file")
+            if metadata:
+                staged = await SubmissionService(self.files).stage_file(metadata)
+                receipt.update(
+                    file={k: metadata[k] for k in ("name", "size", "sha256")},
+                    native_file_uploaded=False,
+                    native_file_bytes_verified=False,
+                    submission_attempted=False,
+                )
             try:
+                if not self.files.store.claim_submission(preview_id, receipt):
+                    return SubmissionService(self.files).receipt(preview_id)
+                return await self._attempt(preview_id, value, receipt, staged)
+            finally:
+                if staged:
+                    staged.unlink(missing_ok=True)
+
+    def _matches(self, items, value, url):
+        expected = [{"type": "str", "text": value["text"]}] if value["text"] else []
+        metadata = value.get("file")
+        if not metadata:
+            return items == expected
+        if len(items) != len(expected) + 1 or items[:-1] != expected:
+            return False
+        item = items[-1]
+        try:
+            return (
+                item.get("type") == "file"
+                and item.get("name") == metadata["name"]
+                and str(item.get("size")) == str(metadata["size"])
+                and document_url(item.get("url")) == document_url(url)
+            )
+        except QQFileError:
+            return False
+
+    async def _attempt(self, preview_id, value, receipt, staged):
+        metadata, url = value.get("file"), None
+        try:
+            if metadata:
+                url = await self.native.upload_document(value["owner"], staged, metadata)
+                receipt["native_file_uploaded"] = True
+                self.files.store.finish_submission(preview_id, "sending", receipt)
+                await self.native.verify_document(url, metadata)
+                # Upload can take time; don't replace an answer changed in the meantime.
+                row = await self._fresh(value)
+                self._writable(row, value["owner"], value["replace_existing"])
+                if self._feedback_hash(row, value["owner"]) != value["feedback_hash"]:
+                    raise QQFileError(
+                        "HOMEWORK_CHANGED", "上传期间答案或批改状态改变，未提交新答案。"
+                    )
+                receipt["submission_attempted"] = True
+                self.files.store.finish_submission(preview_id, "sending", receipt)
+                await self.native.submit_document(
+                    value["group"]["group_id"],
+                    value["homework_id"],
+                    value["owner"],
+                    value["text"],
+                    metadata,
+                    url,
+                )
+            else:
                 await self.native.submit_text(
                     value["group"]["group_id"], value["homework_id"], value["owner"], value["text"]
                 )
+            receipt.update(
+                status="accepted_by_native", message="原生接口确认接受；答案读回尚未确认。"
+            )
+            checked = await self._fresh(value)
+            feedback, main, _ = own_feedback(checked, value["owner"])
+            matching = [
+                x
+                for x in main
+                if x.get("id") and self._matches(content_items(x.get("text")), value, url)
+            ]
+            if feedback.get("status") in {2, 3} and matching:
+                if metadata:
+                    # Verify bytes from the actual own submission, not a group-file receipt.
+                    item = content_items(matching[0]["text"])[-1]
+                    await self.native.verify_document(item["url"], metadata)
+                    receipt["native_file_bytes_verified"] = True
                 receipt.update(
-                    status="accepted_by_native", message="原生接口确认接受；答案读回尚未确认。"
+                    status="verified_native_submission",
+                    native_submission_verified=True,
+                    feedback_id=str(matching[0]["id"]),
+                    own_status=state_summary(checked, value["owner"]),
+                    message="原生详情读回准确答案及提交记录，文件字节已核对（如有）；不代表老师认可。",
                 )
-                checked = await self._fresh(value)
-                feedback, main, _ = own_feedback(checked, value["owner"])
-                expected = [{"type": "str", "text": value["text"]}]
-                matching = [
-                    x for x in main if x.get("id") and content_items(x.get("text")) == expected
-                ]
-                if feedback.get("status") in {2, 3} and matching:
-                    receipt.update(
-                        status="verified_native_submission",
-                        native_submission_verified=True,
-                        feedback_id=str(matching[0]["id"]),
-                        own_status=state_summary(checked, value["owner"]),
-                        message="原生作业详情读回了当前账号的准确答案及提交记录；不代表老师认可。",
-                    )
-                else:
-                    receipt["message"] = (
-                        "原生接口确认接受，但详情未读回准确答案；先核对QQ，禁止自动重试。"
-                    )
-            except (Exception, asyncio.CancelledError) as exc:
+            else:
+                receipt["message"] = "原生接口确认接受，但未读回准确答案；先核对QQ，禁止自动重试。"
+        except (Exception, asyncio.CancelledError) as exc:
+            if metadata and receipt["native_file_uploaded"] and not receipt["submission_attempted"]:
                 receipt.update(
-                    error_code=getattr(exc, "code", "INTERNAL"),
-                    message="未完成可靠读回确认，可能已提交；先核对QQ，禁止自动重试。",
+                    status="upload_only",
+                    message="文件已上传，未尝试提交答案；先核对QQ，禁止自动重试。",
                 )
-                if isinstance(exc, asyncio.CancelledError):
-                    self.files.store.finish_submission(preview_id, receipt["status"], receipt)
-                    raise
-            receipt["completed_at"] = time.time()
-            self.files.store.finish_submission(preview_id, receipt["status"], receipt)
-            return receipt
+            else:
+                receipt["message"] = "未完成可靠读回确认，可能已提交；先核对QQ，禁止自动重试。"
+            receipt["error_code"] = getattr(exc, "code", "INTERNAL")
+            if isinstance(exc, asyncio.CancelledError):
+                self.files.store.finish_submission(preview_id, receipt["status"], receipt)
+                raise
+        receipt["completed_at"] = time.time()
+        self.files.store.finish_submission(preview_id, receipt["status"], receipt)
+        return receipt

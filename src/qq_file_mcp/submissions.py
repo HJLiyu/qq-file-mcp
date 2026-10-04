@@ -143,6 +143,23 @@ class SubmissionService:
             "message": "若发送进行中或进程曾中断，先在 QQ 核对；不能以同一预览重新发送。",
         }
 
+    async def stage_file(self, metadata):
+        task = asyncio.create_task(
+            asyncio.to_thread(self._file, Path(metadata["path"]), staging=True)
+        )
+        try:
+            actual, staged = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                _, unused = await task
+                unused.unlink(missing_ok=True)
+            finally:
+                raise
+        if actual != metadata:
+            staged.unlink(missing_ok=True)
+            raise QQFileError("SUBMISSION_CHANGED", "提交文件已改变，请重新准备并确认。")
+        return staged
+
     async def submit(self, preview_id):
         if not self.settings.enable_submissions:
             raise QQFileError(
@@ -167,24 +184,7 @@ class SubmissionService:
                 raise QQFileError("GROUP_CHANGED", "目标群名称或身份已改变，请重新准备并确认。")
             staged = None
             if value["file"]:
-                task = asyncio.create_task(
-                    asyncio.to_thread(
-                        self._file,
-                        Path(value["file"]["path"]),
-                        staging=True,
-                    )
-                )
-                try:
-                    actual, staged = await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    try:
-                        _, unused = await task
-                        unused.unlink(missing_ok=True)
-                    finally:
-                        raise
-                if actual != value["file"]:
-                    staged.unlink(missing_ok=True)
-                    raise QQFileError("SUBMISSION_CHANGED", "提交文件已改变，请重新准备并确认。")
+                staged = await self.stage_file(value["file"])
             try:
                 receipt = {
                     "ok": True,
