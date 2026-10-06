@@ -6,6 +6,7 @@ import sys
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from test_docx import make_docx
 
 from qq_file_mcp.config import Settings
 from qq_file_mcp.downloads import DownloadedFiles
@@ -91,6 +92,15 @@ async def test_real_stdio_handshake_and_safe_backend_error(tmp_path):
         assert content.structuredContent["ok"] is True
         assert content.structuredContent["units"][0] == {"index": 1, "text": "计算物理"}
         assert content.structuredContent["next_read"] is None
+        make_docx(folder / "要求.docx", "<w:p><w:r><w:t>提交时间</w:t></w:r></w:p>")
+        documents = await session.call_tool("qq_list_downloaded_files", {"query": "要求.docx"})
+        entry = documents.structuredContent["files"][0]
+        assert entry["can_read"] is True
+        word = await session.call_tool("qq_read_downloaded_file", {"file_id": entry["file_id"]})
+        assert word.structuredContent["ok"] is True
+        assert word.structuredContent["unit"] == "block"
+        assert word.structuredContent["units"] == [{"index": 1, "text": "提交时间"}]
+        assert word.structuredContent["warnings"][0]["code"] == "DOCX_TEXT_ONLY"
         catalog = DownloadedFiles(
             Settings(token="test-secret", state_dir=tmp_path / "state", download_dir=folder)
         )

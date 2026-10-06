@@ -9,6 +9,8 @@ import os
 import stat
 import sys
 import warnings
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 TEXT_EXTENSIONS = {
@@ -50,7 +52,9 @@ class FileReadError(Exception):
 
 def file_format(path: Path) -> str:
     suffix = path.suffix.casefold()
-    return "pdf" if suffix == ".pdf" else "text" if suffix in TEXT_EXTENSIONS else "unsupported"
+    if suffix in {".pdf", ".docx"}:
+        return suffix[1:]
+    return "text" if suffix in TEXT_EXTENSIONS else "unsupported"
 
 
 def file_identity(info) -> dict:
@@ -114,9 +118,114 @@ def decode_text(data):
     raise FileReadError("READ_FORMAT", "无法按支持的文本编码读取，或文件包含二进制内容。")
 
 
+def docx_blocks(data):
+    """Read the main body only, without extracting archives or following relationships."""
+    limit = 8 * 1024 * 1024
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        entries = archive.infolist()
+        if len(entries) > 4096:
+            raise FileReadError("DOCX_TOO_LARGE", "DOCX 内部文件数量超过4096，停止解析。")
+        matches = [entry for entry in entries if entry.filename == "word/document.xml"]
+        if len(matches) != 1:
+            raise FileReadError("READ_FORMAT", "DOCX 正文缺失或重复，无法可靠读取。")
+        entry = matches[0]
+        if entry.flag_bits & 1:
+            raise FileReadError("DOCX_ENCRYPTED", "暂不支持加密 DOCX，请使用未加密的副本。")
+        if entry.file_size > limit:
+            raise FileReadError("DOCX_TOO_LARGE", "DOCX 正文展开后超过8 MiB，停止解析。")
+        with archive.open(entry) as stream:
+            xml = stream.read(limit + 1)
+        if len(xml) > limit:
+            raise FileReadError("DOCX_TOO_LARGE", "DOCX 正文展开后超过8 MiB，停止解析。")
+    # Removing NULs also detects declarations in UTF-16/32 XML.
+    declarations = xml.replace(b"\x00", b"").upper()
+    if b"<!DOCTYPE" in declarations or b"<!ENTITY" in declarations:
+        raise FileReadError("READ_FORMAT", "DOCX 正文包含不支持的 XML 声明，停止解析。")
+    depth, nodes = 0, 0
+    parser = ET.iterparse(io.BytesIO(xml), events=("start", "end"))
+    for event, _ in parser:
+        if event == "start":
+            depth += 1
+            nodes += 1
+            if depth > 128 or nodes > 100000:
+                raise FileReadError("DOCX_TOO_LARGE", "DOCX 正文结构过于复杂，停止解析。")
+        else:
+            depth -= 1
+    root = parser.root
+    namespaces = {
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        "http://purl.oclc.org/ooxml/wordprocessingml/main",
+    }
+    namespace = root.tag.removeprefix("{").split("}")[0]
+    if namespace not in namespaces or root.tag != f"{{{namespace}}}document":
+        raise FileReadError("READ_FORMAT", "文件不是支持的 DOCX 正文格式。")
+    w = f"{{{namespace}}}"
+    body = root.find(w + "body")
+    if body is None:
+        raise FileReadError("READ_FORMAT", "DOCX 缺少正文，无法读取。")
+    omitted = {w + tag for tag in ("drawing", "pict", "object", "del", "moveFrom", "txbxContent")}
+    containers = {w + tag for tag in ("body", "sdt", "sdtContent", "customXml", "ins", "moveTo")}
+
+    def paragraph_text(paragraph):
+        parts, pending = [], [paragraph]
+        while pending:
+            node = pending.pop()
+            if node.tag in omitted or not node.tag.startswith(w):
+                continue
+            if node.tag == w + "t":
+                parts.append(node.text or "")
+            elif node.tag == w + "tab":
+                parts.append("\t")
+            elif node.tag in {w + "br", w + "cr"}:
+                parts.append("\n")
+            else:
+                pending.extend(reversed(node))
+        return "".join(parts)
+
+    def paragraphs(container):
+        pending = [container]
+        while pending:
+            node = pending.pop()
+            if node.tag == w + "p":
+                yield paragraph_text(node)
+            elif node.tag in containers or node.tag == w + "tc":
+                pending.extend(reversed(node))
+
+    blocks, pending = [], [body]
+    while pending:
+        node = pending.pop()
+        if node.tag == w + "p":
+            blocks.append(paragraph_text(node))
+        elif node.tag == w + "tbl":
+            for row in node.findall(w + "tr"):
+                blocks.append(
+                    "\t".join("\n".join(paragraphs(cell)) for cell in row.findall(w + "tc"))
+                )
+        elif node.tag in containers:
+            pending.extend(reversed(node))
+    notices = [
+        {
+            "code": "DOCX_TEXT_ONLY",
+            "message": "按正文段落和表格行读取，不提供页码；图片、公式、页眉页脚、批注、"
+            "文本框、嵌套表格、自动编号和版式未解析。",
+        }
+    ]
+    if any(
+        node.tag in {w + "ins", w + "del", w + "moveFrom", w + "moveTo"} for node in body.iter()
+    ):
+        notices.append(
+            {
+                "code": "DOCX_REVISIONS",
+                "message": "文档含修订；读取包含插入文字、跳过删除文字，请在原文确认最终要求。",
+            }
+        )
+    return blocks or [""], notices
+
+
 def extract(request, data):
     kind = request["format"]
     encoding = None
+    notices = []
     if kind == "pdf":
         from pypdf import PdfReader
 
@@ -131,6 +240,12 @@ def extract(request, data):
             if contents and len(contents.get_data()) > 8 * 1024 * 1024:
                 raise FileReadError("PAGE_TOO_LARGE", "PDF 页内容流过大，停止解析此页。")
             return page.extract_text() or ""
+    elif kind == "docx":
+        blocks, notices = docx_blocks(data)
+        total = len(blocks)
+
+        def unit_text(index):
+            return blocks[index]
     else:
         text, encoding = decode_text(data)
         lines = text.splitlines() or [""]
@@ -141,13 +256,13 @@ def extract(request, data):
 
     start, count, offset = request["start"], request["count"], request["char_offset"]
     if start > total:
-        raise FileReadError("INVALID_INPUT", "起始页或行超出文件范围。")
+        raise FileReadError("INVALID_INPUT", "起始页、行或正文块超出文件范围。")
     units, remaining, truncated, next_read = [], request["max_chars"], False, None
     for index in range(start - 1, min(total, start - 1 + count)):
         text = unit_text(index)
         current_offset = offset if index == start - 1 else 0
         if current_offset > len(text):
-            raise FileReadError("INVALID_INPUT", "字符偏移超出当前页或行的范围。")
+            raise FileReadError("INVALID_INPUT", "字符偏移超出当前页、行或正文块的范围。")
         fragment = text[current_offset : current_offset + remaining]
         units.append({"index": index + 1, "text": fragment})
         remaining -= len(fragment)
@@ -167,14 +282,14 @@ def extract(request, data):
             truncated = next_read is not None
             break
     result = {
-        "unit": "page" if kind == "pdf" else "line",
+        "unit": "page" if kind == "pdf" else "block" if kind == "docx" else "line",
         "total_units": total,
         "units": units,
         "start": start,
         "end": units[-1]["index"],
         "truncated": truncated,
         "next_read": next_read,
-        "warnings": [],
+        "warnings": notices,
     }
     if encoding:
         result["encoding"] = encoding

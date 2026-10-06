@@ -132,7 +132,7 @@ def main():
     )
     downloads.add_argument("--published-after")
     downloads.add_argument("--published-before")
-    read = sub.add_parser("read", help="离线读取 PDF 页或文本行")
+    read = sub.add_parser("read", help="离线读取 PDF 页、DOCX 正文块或文本行")
     read.add_argument("file_id")
     read.add_argument("--start", type=int, default=1)
     read.add_argument("--count", type=int)

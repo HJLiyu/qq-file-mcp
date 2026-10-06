@@ -139,6 +139,66 @@ async def test_preflight_changes_never_upload(documents, change):
     assert not list((service.settings.state_dir / "submission-staging").glob("*"))
 
 
+@pytest.mark.parametrize("suffix", [".pdf", ".doc", ".docx"])
+@pytest.mark.parametrize("phase", ["prepare", "submit"])
+@pytest.mark.parametrize("failure", ["locked", "read"])
+async def test_local_document_io_failure_is_actionable_and_never_claims_or_uploads(
+    documents, monkeypatch, suffix, phase, failure
+):
+    native, service, path = documents
+    path = path.rename(path.with_suffix(suffix))
+    ref = await reference(service)
+    preview = await service.prepare(ref, file_path=str(path)) if phase == "submit" else None
+    original_open = Path.open
+    private_detail = "PRIVATE_FILESYSTEM_DETAIL"
+
+    class FailingReader:
+        def __init__(self, stream):
+            self.stream = stream
+            self.reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, size):
+            self.reads += 1
+            if self.reads > 1:
+                raise OSError(5, private_detail, str(path))
+            return self.stream.read(size)
+
+    def unavailable_source(target, *args, **kwargs):
+        if target == path:
+            if failure == "locked":
+                raise PermissionError(13, private_detail, str(path))
+            return FailingReader(original_open(target, *args, **kwargs))
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", unavailable_source)
+    with pytest.raises(QQFileError) as caught:
+        if preview:
+            await service.submit(preview["preview_id"])
+        else:
+            await service.prepare(ref, file_path=str(path))
+    assert caught.value.code == "SUBMISSION_IO"
+    error = caught.value.as_dict()
+    assert private_detail not in str(error) and str(path) not in str(error)
+    assert not native.uploads and not native.writes
+    assert not list((service.settings.state_dir / "submission-staging").glob("*"))
+    if preview:
+        saved = service.files.store.submission(preview["preview_id"])
+        assert saved["status"] == "ready" and saved["receipt"] is None
+        assert saved["value"]["file"]["sha256"] == hashlib.sha256(PDF).hexdigest()
+    else:
+        with service.files.store._connect() as db:
+            assert db.execute("SELECT count(*) FROM submissions").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("source", ["outside", "empty", "too_large", "unsupported", "link"])
 async def test_native_file_root_size_format_and_link_guards(documents, tmp_path, source):
     native, service, path = documents

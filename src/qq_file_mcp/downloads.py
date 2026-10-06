@@ -247,9 +247,7 @@ class DownloadedFiles:
             raise QQFileError("FILE_CHANGED", "本地文件已变化，请重新列出下载文件。")
         kind = file_format(path)
         if kind == "unsupported":
-            raise QQFileError(
-                "UNSUPPORTED_FORMAT", "暂支持 PDF 和常见文本文件；不解压、不执行文件。"
-            )
+            raise QQFileError("UNSUPPORTED_FORMAT", "暂支持 PDF、DOCX 和常见文本文件；不执行文件。")
         if info.st_size > self.settings.max_read_bytes:
             raise QQFileError("FILE_TOO_LARGE", "文件超过配置的读取大小上限。")
         count = (3 if kind == "pdf" else 200) if count is None else count
@@ -264,7 +262,7 @@ class DownloadedFiles:
             or not 1 <= max_chars <= 20000
         ):
             raise QQFileError(
-                "INVALID_INPUT", "起点从1开始；每次最多10页或500行、20000字符，偏移不可为负。"
+                "INVALID_INPUT", "起点从1开始；最多10页或500行/正文块、20000字符，偏移不可为负。"
             )
         request = {
             "root": str(self.root),

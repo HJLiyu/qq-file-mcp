@@ -67,10 +67,15 @@ class SubmissionService:
                 "sha256": digest.hexdigest(),
                 "identity": identity,
             }, (Path(staged.name) if staged else None)
-        except BaseException:
+        except BaseException as exc:
             if staged:
                 staged.close()
                 Path(staged.name).unlink(missing_ok=True)
+            if isinstance(exc, OSError):
+                raise QQFileError(
+                    "SUBMISSION_IO",
+                    "无法读取或暂存提交文件；请检查文件占用、访问权限和磁盘空间。",
+                ) from exc
             raise
         finally:
             if staged:

@@ -7,6 +7,7 @@ import os
 import secrets
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .errors import QQFileError
@@ -40,8 +41,14 @@ class ResultStore:
         if os.name != "nt":
             self.path.chmod(0o600)
 
+    @contextmanager
     def _connect(self):
-        return sqlite3.connect(self.path, timeout=5)
+        db = sqlite3.connect(self.path, timeout=5)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def put(self, kind: str, value: dict) -> str:
         item_id = secrets.token_urlsafe(18)
